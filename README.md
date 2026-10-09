@@ -60,6 +60,6 @@ The generator uses public catalog metadata only; no private library or credentia
 
 ## Validation
 
-JavaScript syntax, catalog references, desktop and phone layout, browser console, search, playlists, folders, library persistence, audio import/playback, and valid/invalid WebMCP inputs were checked. Spotify and live YouTube API calls require provider credentials and could not be tested against a signed-in provider account. YouTube’s embedding refusal was checked as a real error state.
+JavaScript syntax, catalog references, desktop and phone layout, browser console, search, playlists, folders, library persistence, audio import/playback, and valid/invalid WebMCP inputs were checked. Spotify and live YouTube API calls require provider credentials and could not be tested against a signed-in provider account. Live YouTube playback, the player’s synchronized controls, and YouTube’s embedding refusal were checked in the browser. GitHub Pages deployment succeeded, and every published website file was verified against its source.
 
 Composer image licensing and original sources are retained in `docs/assets/composers/Credits.json`. Catalog art remains hosted by its provider.
