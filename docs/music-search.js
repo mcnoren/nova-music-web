@@ -35,6 +35,39 @@ export function mergeResults(first,second) {
     return (ai<0?first.length+second.findIndex(x=>x.id===a.id):ai)-(bi<0?first.length+second.findIndex(x=>x.id===b.id):bi);
   });
 }
+export function popularityCount(value){
+ if(typeof value==='number')return Number.isFinite(value)&&value>0?value:0;
+ const text=String(value||'').replace(/,/g,''),match=text.match(/([\d.]+)\s*([KMB])?/i);
+ return match?Number(match[1])*({K:1e3,M:1e6,B:1e9}[match[2]?.toUpperCase()]||1):0;
+}
+export function searchScore(item,query,kind,index=0,top=null){
+ const q=normalizeSearch(query),title=normalizeSearch(item.title||item.name),artist=normalizeSearch(item.artist||item.author);
+ if(!q)return -index;
+ const tokens=q.split(' '),words=(title+' '+artist).split(' ');
+ const matches=tokens.map(t=>words.some(w=>w===t||w.startsWith(t)&&t.length>=3||t.length>=4&&Math.abs(t.length-w.length)<=2&&distance(t,w)<=(t.length>=8?2:1)));
+ let score=(title===q?120:title.startsWith(q)?50:title.includes(q)?35:0)+(matches.every(Boolean)?70:30*matches.filter(Boolean).length/tokens.length);
+ if(artist===q&&kind!=='artists')score+=50;
+ const variants=['live','cover','karaoke','tribute','remix','sped up','slowed','instrumental','reaction','tutorial','lyrics'];
+ for(const variant of variants)if((' '+title+' ').includes(' '+variant+' ')&&!q.includes(variant))score-=35;
+ if(kind==='songs'&&item.musicVideoType==='MUSIC_VIDEO_TYPE_ATV')score+=8;
+ score+=Math.max(0,12-index*.6);
+ if(top?.kind===kind&&top.id===item.id)score+=18;
+ // Popularity breaks close matches; it cannot overwhelm title/artist relevance.
+ score+=Math.min(10,Math.log10(1+popularityCount(item.viewCount||item.views||item.audience)));
+ return score;
+}
+export function rankSearch(result,query=result.correction||result.query||''){
+ const ranked={...result},candidates=[];
+ for(const kind of ['songs','artists','albums','playlists']){
+  const entries=(result[kind]||[]).map((item,index)=>({item,index,score:searchScore(item,query,kind,index,result.top)})).sort((a,b)=>b.score-a.score||a.index-b.index);
+  ranked[kind]=entries.map(e=>e.item);
+  if(entries.length)candidates.push({kind,id:entries[0].item.id,score:entries[0].score});
+ }
+ candidates.sort((a,b)=>b.score-a.score);
+ ranked.top=candidates[0]?{kind:candidates[0].kind,id:candidates[0].id}:null;
+ ranked.categoryOrder=candidates.map(c=>c.kind);
+ return ranked;
+}
 export class MusicSearchClient {
   constructor(url,{fetcher=(...args)=>fetch(...args),now=Date.now,publicKey=''}={}){this.url=url;this.publicKey=publicKey;this.fetcher=fetcher;this.now=now;this.cache=new Map();}
   async request(input,{signal}={}){

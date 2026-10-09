@@ -15,3 +15,6 @@ For another copy of the native app:
 The app stores access/refresh tokens in Keychain with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Library metadata and offline pending changes are cached in app preferences. This does not encrypt library metadata end to end. Reauthentication uses the current account and retains its pending changes; sign-out restores the saved guest library after successful sync.
 
 The configured project is shared with the live website. Email confirmation/reset links open the website; afterward sign into the native app with your email and password. The built-in mail service is limited to project-team addresses until custom SMTP is configured.
+
+
+Profile update: `YouTubeStore` now owns a published `MusicAccountProfile`, restored from `music.account.profile` defaults. Account application validates the profile before changing the library. `MusicProfileAccountButton(store:)` opens the account sheet and profile editor, including the system photo picker. The integrated app places this control beside Settings in its music header. Another native checkout must add the same store property/restore code before adopting the updated account files. The shared search changes live in `NovaBrowser/YouTubeStore.swift`, `MusicMetadata.swift` and `YouTubeView.swift` in the working app, with regression tests in `NovaMusicTests/NovaMusicTests.swift`.

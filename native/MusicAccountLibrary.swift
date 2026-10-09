@@ -68,6 +68,7 @@ enum MusicAccountLibrary {
         for (index, song) in store.musicHistory.enumerated() {
             result["recent:\(song.id)"] = old["recent:\(song.id)"] ?? .object(["id":.string(song.id),"at":.number(Date().timeIntervalSince1970 * 1000 - Double(index))])
         }
+        if store.musicProfile != MusicAccountProfile() { result["profile:main"] = try .encoded(store.musicProfile.validated()) }
         result["preference:genres"] = .array(store.discoverGenres.map(NovaSyncValue.string))
         return result
     }
@@ -145,7 +146,10 @@ enum MusicAccountLibrary {
             let artist = values["discArtist:\(album)"]?.string ?? releases.first(where: { $0.value.contains(where: { $0.id == album }) })?.key
             if let artist { discs[artist,default:[:]][album] = selected.compactMap(\.safeInt) }
         }
+        let profile = try values["profile:main"].map { try $0.decoded(MusicAccountProfile.self).validated() } ?? MusicAccountProfile()
         // Validate and decode every supported collection before changing any live state.
+        store.musicProfile = profile
+        store.defaults.set(try JSONEncoder().encode(profile),forKey:"music.account.profile")
         store.likedSongs = orderedIDs("liked").map { songs[$0] ?? .placeholder($0) }
         store.saved = orderedIDs("saved").map { songs[$0] ?? .placeholder($0) }
         store.likedAlbums = orderedIDs("savedAlbum").compactMap { albums[$0] }

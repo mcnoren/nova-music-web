@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import Security
 import UIKit
+import PhotosUI
 
 @MainActor
 final class MusicAccountSync: ObservableObject {
@@ -116,7 +117,7 @@ final class MusicAccountSync: ObservableObject {
     }
     private var cacheKey: String { "music.sync.document." + (user?.id.uuidString.lowercased() ?? "guest") }
     private func saveDocument() throws { guard let store else { return }; store.defaults.set(try JSONEncoder().encode(document),forKey:cacheKey) }
-    private func changed() { captureChanges(schedule: true) }
+    func changed() { captureChanges(schedule: true) }
     private func captureChanges(schedule: Bool) {
         guard user != nil, !applying, let store else { return }
         do {
@@ -262,11 +263,93 @@ struct MusicAccountSyncSection: View {
             }
             if working { ProgressView() }
             if let text = message ?? account.error { Text(text).font(.footnote).foregroundStyle(.secondary) }
-            Text("Sync includes library metadata. Imported audio, photos and playback settings remain on their original device.").font(.footnote).foregroundStyle(.secondary)
+            Text("Sync includes library metadata. Your profile picture syncs too. Imported audio, library artwork and playback settings remain on their original device.").font(.footnote).foregroundStyle(.secondary)
         }
     }
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
         working = true; message = nil
         Task { do { try await operation() } catch { message = error.localizedDescription }; password = ""; confirmation = ""; working = false }
+    }
+}
+
+
+struct MusicProfileAvatar: View {
+    let profile: MusicAccountProfile
+    var size: CGFloat = 38
+    private var photo: UIImage? {
+        guard let encoded = profile.image.split(separator:",",maxSplits:1).last, !profile.image.isEmpty, let data = Data(base64Encoded:String(encoded)) else { return nil }
+        return UIImage(data:data)
+    }
+    var body: some View {
+        ZStack {
+            Color(red: Double(Int(profile.color.dropFirst().prefix(2),radix:16) ?? 30)/255,
+                  green: Double(Int(profile.color.dropFirst(3).prefix(2),radix:16) ?? 215)/255,
+                  blue: Double(Int(profile.color.suffix(2),radix:16) ?? 96)/255)
+            if let photo { Image(uiImage:photo).resizable().scaledToFill() }
+            else { Text(profile.icon).font(.system(size:size * 0.5)).foregroundStyle(.black) }
+        }.frame(width:size,height:size).clipShape(Circle()).accessibilityHidden(true)
+    }
+}
+struct MusicProfileAccountButton: View {
+    @ObservedObject var store: YouTubeStore
+    @State private var presented = false
+    var body: some View {
+        Button { presented = true } label: { MusicProfileAvatar(profile:store.musicProfile) }
+            .accessibilityLabel(store.musicProfile.name.isEmpty ? "Account" : "\(store.musicProfile.name), Account")
+            .sheet(isPresented:$presented) {
+                NavigationStack {
+                    Form {
+                        Section { HStack(spacing:16) { MusicProfileAvatar(profile:store.musicProfile,size:72); VStack(alignment:.leading) { Text(store.musicProfile.name.isEmpty ? "Your profile" : store.musicProfile.name).font(.title2.bold()); NavigationLink("Edit profile icon") { MusicProfileEditor(store:store) } } }.padding(.vertical,8) }
+                        MusicAccountSyncSection(account:store.musicAccount)
+                    }.navigationTitle("Account").toolbar { ToolbarItem(placement:.confirmationAction) { Button("Done") { presented = false } } }
+                }.preferredColorScheme(.dark)
+            }
+    }
+}
+struct MusicProfileEditor: View {
+    @ObservedObject var store: YouTubeStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = MusicAccountProfile()
+    @State private var photo: PhotosPickerItem?
+    @State private var loadingPhoto = false
+    @State private var error: String?
+    var body: some View {
+        Form {
+            Section { HStack { Spacer(); MusicProfileAvatar(profile:draft,size:100); Spacer() }.padding(.vertical,16); TextField("Display name",text:$draft.name) }
+            Section("Choose an icon") {
+                LazyVGrid(columns:Array(repeating:GridItem(.flexible()),count:6)) {
+                    ForEach(MusicAccountProfile.icons,id:\.self) { icon in
+                        Button { draft.icon = icon; draft.image = "" } label: { Text(icon).font(.title).frame(maxWidth:.infinity,minHeight:44).background(draft.image.isEmpty && draft.icon == icon ? Color.white.opacity(0.18) : .clear,in:RoundedRectangle(cornerRadius:8)) }.buttonStyle(.plain).accessibilityLabel("Icon \(icon)").accessibilityAddTraits(draft.image.isEmpty && draft.icon == icon ? .isSelected : [])
+                    }
+                }
+            }
+            Section("Background color") {
+                HStack { ForEach(MusicAccountProfile.colors,id:\.self) { color in
+                    Button { draft.color = color } label: { MusicProfileAvatar(profile:MusicAccountProfile(icon:"",color:color),size:32).overlay { if draft.color == color { Image(systemName:"checkmark").foregroundStyle(.black) } } }.buttonStyle(.plain).accessibilityLabel(["#1ed760":"Green","#a78bfa":"Purple","#fb7185":"Pink","#38bdf8":"Blue","#fbbf24":"Yellow","#fb923c":"Orange"][color] ?? color).accessibilityAddTraits(draft.color == color ? .isSelected : [])
+                } }
+            }
+            Section {
+                PhotosPicker("Choose a profile photo",selection:$photo,matching:.images)
+                if !draft.image.isEmpty { Button("Remove photo") { draft.image = "" } }
+                if loadingPhoto { ProgressView() }
+                if let error { Text(error).foregroundStyle(.secondary) }
+                Text(store.musicAccount.user == nil ? "Sign in to sync your icon across devices." : "Your profile is saved privately with your account and syncs across devices.").font(.footnote).foregroundStyle(.secondary)
+            }
+        }.navigationTitle("Edit profile").onAppear { draft = store.musicProfile }
+            .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Save") { do { let profile = try draft.validated(); store.musicProfile = profile; store.defaults.set(try JSONEncoder().encode(profile),forKey:"music.account.profile"); store.musicAccount.changed(); dismiss() } catch { self.error = "Choose a name up to 60 characters and a smaller photo." } }.disabled(loadingPhoto) } }
+            .task(id:photo) {
+                guard let photo else { return }; loadingPhoto = true; defer { loadingPhoto = false }
+                do {
+                    guard let data = try await photo.loadTransferable(type:Data.self), data.count <= 15_000_000, let image = UIImage(data:data) else { throw NovaSyncFailure.invalidDocument }
+                    try Task.checkCancellation()
+                    let format = UIGraphicsImageRendererFormat(); format.scale = 1
+                    let resized = UIGraphicsImageRenderer(size:CGSize(width:256,height:256),format:format).image { _ in
+                        let side = min(image.size.width,image.size.height),scale = 256/side
+                        image.draw(in:CGRect(x:(256-image.size.width*scale)/2,y:(256-image.size.height*scale)/2,width:image.size.width*scale,height:image.size.height*scale))
+                    }
+                    guard let jpeg = resized.jpegData(compressionQuality:0.8) else { throw NovaSyncFailure.invalidDocument }
+                    draft.image = "data:image/jpeg;base64," + jpeg.base64EncodedString(); draft = try draft.validated(); error = nil
+                } catch { if !Task.isCancelled { self.error = "This photo could not load. Choose a smaller image." } }
+            }
     }
 }

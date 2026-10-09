@@ -1,5 +1,6 @@
 // The same record envelope is used by the website and iOS app.
 // Tombstones retain removals, so an offline device cannot resurrect old entries.
+import {validateProfile,defaultProfile} from './profile.js?v=45be314c1460';
 export const SYNC_VERSION = 1;
 const actorPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const keyPattern = /^[A-Za-z]+:[A-Za-z0-9_.:-]{1,240}$/;
@@ -71,6 +72,7 @@ export function libraryValues(state, catalog) {
   for (const [album, discs] of Object.entries(state.discChoices || {})) values['discs:' + album] = discs;
   for (const item of state.recent || []) if (remoteSong(item.id)) { values['recent:' + item.id] = item; addSong(item.id); }
   values['preference:genres'] = state.genres || [];
+  if(state.profile){const profile=validateProfile(state.profile);if(stable(profile)!==stable(defaultProfile()))values['profile:main']=profile;}
   const albumIDs = new Set([...(state.albums || []), ...Object.values(state.releaseChoices || {}).flat(), ...(state.folders || []).flatMap(folder => folder.items.filter(item => item.kind === 'album').map(item => item.id))]);
   for (const id of albumIDs) {
     const album = knownAlbums.get(id); if (!album) continue;
@@ -83,6 +85,7 @@ export function libraryValues(state, catalog) {
 export function applyLibraryValues(state, values) {
   // Native-only record types remain in the document, even when the web UI has no editor for them.
   const next = json(state), list = prefix => Object.entries(values).filter(([key]) => key.startsWith(prefix + ':')).map(([, value]) => value);
+  next.profile=values['profile:main']?validateProfile(values['profile:main']):defaultProfile();
   const validID = id => typeof id === 'string' && /^[A-Za-z0-9_.:-]{1,240}$/.test(id);
   const ids = prefix => list(prefix).filter(value => value && validID(value.id)).sort((a, b) => (a.order || 0) - (b.order || 0) || a.id.localeCompare(b.id)).map(value => value.id);
   const localIDs = key => (state[key] || []).filter(id => id.startsWith('local-'));

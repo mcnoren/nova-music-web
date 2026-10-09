@@ -38,14 +38,15 @@ export function parseCatalog(root) {
     const title=text(columns[0]||item.title);
     if(!title)continue;
     const metadata=columns.slice(1).flatMap(c=>c?.runs||[]).concat(item.subtitle?.runs||[]);
-    const parts=text(columns[1]||item.subtitle).split(' • ').map(s=>s.trim());
+    const parts=(columns.length>1?columns.slice(1).map(text).join(' • '):text(item.subtitle)).split(' • ').map(s=>s.trim());
     const endpoint=item.navigationEndpoint || (columns[0]||item.title)?.runs?.[0]?.navigationEndpoint || {};
     const id=endpoint.browseEndpoint?.browseId;
     const artwork=image(item);
     const artistRuns=metadata.filter(r=>browse(r).startsWith('UC'));
-    const artist=artistRuns.map(r=>r.text).join(', ') || inherited.get(item)?.name || parts.find(p=>p&&!/^(Song|Video|Album|Single|EP|Playlist|Artist|\d{4}|\d+:\d\d|.*views|.*songs|.*monthly audience)$/.test(p)) || '';
+    const artist=artistRuns.map(r=>r.text).join(', ') || inherited.get(item)?.name || parts.find(p=>p&&!/^(Song|Video|Album|Single|EP|Playlist|Artist|\d{4}|\d+:\d\d|.*views|.*plays|.*songs|.*monthly audience|.*subscribers|.*listeners)$/i.test(p)) || '';
     let kind,entry;
-    if(id?.startsWith('UC')){kind='artists';entry={id,name:title,artwork};}
+    const popularity=parts.find(p=>/\b(views|plays|monthly audience|subscribers)\b/i.test(p))||'';
+    if(id?.startsWith('UC')){kind='artists';entry={id,name:title,artwork,audience:popularity};}
     else if(id?.startsWith('MPRE')){kind='albums';entry={id,title,artist,artistId:browse(artistRuns[0]),artwork,year:parts.find(p=>/^\d{4}$/.test(p))||'',type:parts.find(p=>/^(Album|Single|EP)$/.test(p))||'Album',tracks:[],complete:false};}
     else if(id?.startsWith('VL')){kind='playlists';entry={id:id.slice(2),name:title,author:artist,artwork,remote:true};}
     else {
@@ -56,7 +57,7 @@ export function parseCatalog(root) {
       const fixed=(item.fixedColumns||[]).map(c=>text(c.musicResponsiveListItemFixedColumnRenderer?.text));
       const musicVideoType=watch?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType;
       if(musicVideoType==='MUSIC_VIDEO_TYPE_PODCAST_EPISODE'||parts[0]==='Episode')continue;
-      kind='songs';entry={id:videoId,title,artist:artist||'YouTube Music',artistId:browse(artistRuns[0])||inherited.get(item)?.id||'',album:album?.text||'',albumId:browse(album),artwork:artwork||`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,duration:fixed.concat(parts).map(duration).find(Boolean)||0,explicit:[...walk(item.badges||[])].some(n=>n.iconType==='MUSIC_EXPLICIT_BADGE'),musicVideoType,source:'youtube'};
+      kind='songs';entry={id:videoId,title,artist:artist||'YouTube Music',artistId:browse(artistRuns[0])||inherited.get(item)?.id||'',album:album?.text||'',albumId:browse(album),artwork:artwork||`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,duration:fixed.concat(parts).map(duration).find(Boolean)||0,views:popularity,explicit:[...walk(item.badges||[])].some(n=>n.iconType==='MUSIC_EXPLICIT_BADGE'),musicVideoType,source:'youtube'};
     }
     if(seen.has(kind+entry.id))continue;
     seen.add(kind+entry.id);result[kind].push(entry);
@@ -101,8 +102,7 @@ export async function execute(input, request=musicRequest) {
     if(kind==='All'){
       const tracks=parseCatalog(responses[1]);
       const trackById=new Map(tracks.songs.map(s=>[s.id,s]));
-      result.songs=[...new Map([...tracks.songs,...result.songs].map(s=>[s.id,{...s,...trackById.get(s.id)}])).values()];
-      if(result.top?.kind==='songs'&&tracks.songs.length)result.top={kind:'songs',id:tracks.songs[0].id};
+      result.songs=[...new Map([...tracks.songs,...result.songs].map(s=>[s.id,{...s,...trackById.get(s.id),views:trackById.get(s.id)?.views||s.views}])).values()];
       result.correction ||= tracks.correction;
       result.cursor=''; // Each overview shelf has its own page; filters paginate.
     }

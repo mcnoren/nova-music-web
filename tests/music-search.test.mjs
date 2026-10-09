@@ -46,3 +46,31 @@ test('service rejects arbitrary fetch targets, huge inputs, unexpected origins a
   assert.equal((await handler(new Request('https://example.test'))).status,405);
   assert.equal((await handler(new Request('https://example.test',{method:'OPTIONS',headers:{Origin:'https://mcnoren.github.io'}}))).status,204);
 });
+
+test('search top result changes between artist, album and song according to query intent',async()=>{
+ const {rankSearch}=await import('../docs/music-search.js');
+ const input={songs:[{id:'song',title:'After Midnight',artist:'Chappell Roan',musicVideoType:'MUSIC_VIDEO_TYPE_ATV'}],artists:[{id:'artist',name:'Chappell Roan'}],albums:[{id:'album',title:'The Rise and Fall of a Midwest Princess',artist:'Chappell Roan'}],playlists:[],top:{kind:'artists',id:'artist'}};
+ assert.deepEqual(rankSearch(input,'Chappell Roan').top,{kind:'artists',id:'artist'});
+ assert.deepEqual(rankSearch(input,'The Rise and Fall of a Midwest Princess').top,{kind:'albums',id:'album'});
+ assert.deepEqual(rankSearch(input,'After Midnight Chappell Roan').top,{kind:'songs',id:'song'});
+ assert.deepEqual(rankSearch({...input,songs:[]},'The Rise and Fall of a Midwest Princess').top,{kind:'albums',id:'album'});
+});
+test('popularity helps close matches without elevating unrelated or unwanted versions',async()=>{
+ const {rankSearch,popularityCount}=await import('../docs/music-search.js');
+ assert.equal(popularityCount('1.2B views'),1.2e9);assert.equal(popularityCount('123,456 plays'),123456);
+ const songs=[{id:'small',title:'Hello',artist:'Adele',views:'1K views'},{id:'popular',title:'Hello',artist:'Adele',views:'1B views'},{id:'cover',title:'Hello Cover',artist:'Adele',views:'9B views'},{id:'unrelated',title:'Another song',artist:'Other',views:'99B views'}];
+ assert.equal(rankSearch({songs},'Hello Adele').songs[0].id,'popular');
+ assert.equal(rankSearch({songs},'Hello Cover Adele').songs[0].id,'cover');
+});
+
+test('play counts are metadata and never become the artist on album tracks',()=>{
+ const item=song('12345678901','After Midnight');
+ item.musicResponsiveListItemRenderer.flexColumns[1].musicResponsiveListItemFlexColumnRenderer.text={runs:[{text:'19M plays'}]};
+ const result=parseCatalog({contents:[item]});
+ assert.equal(result.songs[0].artist,'YouTube Music');assert.equal(result.songs[0].views,'19M plays');
+});
+test('artist searches keep official songs ahead of uploader titles that repeat the artist name',async()=>{
+ const {rankSearch}=await import('../docs/music-search.js');
+ const songs=[{id:'upload',title:'Chappell Roan - Pink Pony Club (Lyrics)',artist:'Lost Panda',views:'20M views'},{id:'official',title:'Pink Pony Club',artist:'Chappell Roan',musicVideoType:'MUSIC_VIDEO_TYPE_ATV',views:'316M plays'}];
+ assert.equal(rankSearch({songs},'Chappell Roan').songs[0].id,'official');
+});

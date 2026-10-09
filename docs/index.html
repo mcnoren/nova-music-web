@@ -5,7 +5,7 @@
   <meta name="theme-color" content="#000000"><meta name="description" content="Nova Music for the web. Discover music, explore classical works, and make your own library of songs, albums, playlists and folders.">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>Nova Music</title><link rel="icon" href="assets/icon-192.png"><link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="styles.css?v=d6c338156e5b">
+  <link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="styles.css?v=9b11a7e5ba3b">
 </head>
 <body>
   <a class="skip" href="#content">Skip to music</a>
@@ -24,7 +24,7 @@
   <div class="workspace">
     <main id="content" tabindex="-1"><div class="page-heading"><div><p class="eyebrow">NOVA MUSIC</p><h1>Discover</h1></div></div><div class="chips"><button class="active">For you</button><button>Relax</button><button>Energize</button><button>Focus</button><button>Workout</button></div><section><div class="section-heading"><h2>Quick picks</h2></div><p class="muted">Loading the music catalog…</p></section></main>
   </div>
-  <aside id="player-panel" class="player-panel" hidden aria-label="Now playing"><div class="panel-heading"><h2>Now playing</h2><button data-action="close-panel" class="icon-button" aria-label="Close now playing">×</button></div><div id="youtube-host"><div id="youtube-player"></div></div><div id="panel-body"></div></aside>
+  <aside id="player-panel" class="player-panel" hidden aria-label="Now playing"><div class="panel-heading"><div id="panel-switcher" class="panel-tabs" aria-label="Player view"></div><button data-action="close-panel" class="icon-button" aria-label="Close now playing">×</button></div><div id="youtube-host"><div id="youtube-player"></div></div><div id="panel-body"></div></aside>
   <footer class="player-bar" aria-label="Music player">
     <button id="current-song" class="current-song" data-action="player"><span class="art-placeholder small">♪</span><span><strong>Choose a song</strong><small>Start with Discover or your library</small></span></button>
     <div class="playback"><div class="transport"><button data-action="shuffle" class="icon-button" aria-label="Shuffle" aria-pressed="false"><span data-icon="shuffle"></span></button><button data-action="previous" class="icon-button" aria-label="Previous song"><span data-icon="previous"></span></button><button data-action="toggle-play" class="play-main" aria-label="Play"><span data-icon="play"></span></button><button data-action="next" class="icon-button" aria-label="Next song"><span data-icon="next"></span></button><button data-action="repeat" class="icon-button" aria-label="Repeat off"><span data-icon="repeat"></span></button></div><div class="timeline"><span id="elapsed">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Playback position"><span id="duration">0:00</span></div></div>
@@ -32,6 +32,7 @@
   </footer>
   <nav class="mobile-nav" aria-label="Mobile navigation"><a href="#discover" data-nav="discover"><span data-icon="home"></span>Home</a><a href="#classical" data-nav="classical"><span data-icon="classical"></span>Classical</a><a href="#library" data-nav="library"><span data-icon="library"></span>Library</a><a href="#search" data-nav="search"><span data-icon="search"></span>Search</a></nav>
   <dialog id="modal"><div class="modal-heading"><h2 id="modal-title"></h2><button data-action="close-modal" class="icon-button" aria-label="Close dialog">×</button></div><div id="modal-body"></div></dialog>
+  <div id="context-menu" class="context-menu" role="menu" hidden></div>
   <div id="toast" role="status" aria-live="polite"></div><audio id="audio" preload="metadata"></audio>
-  <script type="module" src="app.js?v=7b59db79239e"></script>
+  <script type="module" src="app.js?v=ab7ac2001375"></script>
 </body></html>

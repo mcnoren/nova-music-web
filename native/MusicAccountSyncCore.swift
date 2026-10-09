@@ -90,3 +90,18 @@ enum NovaSyncFailure: LocalizedError {
         }
     }
 }
+
+
+struct MusicAccountProfile: Codable, Equatable, Sendable {
+    var name = ""
+    var icon = "♪"
+    var color = "#1ed760"
+    var image = ""
+    static let icons = ["♪","♫","🎧","🎵","⭐","🌙","🌸","🦋","⚡","💿","🎹","🚀"]
+    static let colors = ["#1ed760","#a78bfa","#fb7185","#38bdf8","#fbbf24","#fb923c"]
+    func validated() throws -> Self {
+        guard name.utf16.count <= 60, Self.icons.contains(icon), Self.colors.contains(color), image.utf8.count <= 180000,
+              image.isEmpty || image.range(of: #"^data:image/(jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$"#,options:.regularExpression) != nil else { throw NovaSyncFailure.invalidDocument }
+        var result = self; result.name = name.trimmingCharacters(in:.whitespacesAndNewlines); return result
+    }
+}

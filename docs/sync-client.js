@@ -1,4 +1,4 @@
-import {emptyDocument, validateDocument, mergeDocuments, updateDocument, valuesOf, documentsEqual} from './sync-model.js?v=eb643c1fec69';
+import {emptyDocument, validateDocument, mergeDocuments, updateDocument, valuesOf, documentsEqual} from './sync-model.js?v=57b8b9d3a790';
 
 const SESSION = 'nova-music-auth-session-v1';
 export const accountLibraryKey = id => 'nova-music-account-library-v1:' + id;
