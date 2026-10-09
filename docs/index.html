@@ -18,7 +18,8 @@
       <a href="#search" data-nav="search"><span data-icon="search"></span>Search</a>
     </nav>
     <div class="side-library"><div class="side-label">YOUR MUSIC<button data-action="new-playlist" class="icon-button" aria-label="New playlist">+</button></div><div id="sidebar-playlists"></div></div>
-    <div class="sidebar-bottom"><button data-action="import" class="subtle"><span data-icon="plus"></span>Add music</button><button data-action="settings" class="subtle"><span data-icon="settings"></span>Settings</button><span class="local-label">Your library stays on this device</span></div>
+    <div class="sidebar-bottom"><button data-action="import" class="subtle"><span data-icon="plus"></span>Add music</button><button id="account-button" data-action="account"><span data-icon="artist"></span><span id="account-label">Sign in</span></button>
+      <button data-action="settings" class="subtle"><span data-icon="settings"></span>Settings</button><span class="local-label"><span id="library-storage-note">Your library stays on this device</span></span></div>
   </aside>
   <div class="workspace">
     <header class="topbar"><div class="history"><button class="icon-button" data-action="back" aria-label="Back"><span data-icon="back"></span></button><span id="breadcrumb">Discover</span></div><div class="top-actions"><button data-action="search" class="search-shortcut"><span data-icon="search"></span><span>Search your next favorite</span><kbd>/</kbd></button><button data-action="settings" class="avatar" aria-label="Open settings">N</button></div></header>
@@ -33,5 +34,5 @@
   <nav class="mobile-nav" aria-label="Mobile navigation"><a href="#discover" data-nav="discover"><span data-icon="discover"></span>Discover</a><a href="#classical" data-nav="classical"><span data-icon="classical"></span>Classical</a><a href="#library" data-nav="library"><span data-icon="library"></span>Library</a><a href="#search" data-nav="search"><span data-icon="search"></span>Search</a></nav>
   <dialog id="modal"><div class="modal-heading"><h2 id="modal-title"></h2><button data-action="close-modal" class="icon-button" aria-label="Close dialog">×</button></div><div id="modal-body"></div></dialog>
   <div id="toast" role="status" aria-live="polite"></div><audio id="audio" preload="metadata"></audio>
-  <script type="module" src="app.js?v=e646a490d608"></script>
+  <script type="module" src="app.js?v=6bd651b9c3f4"></script>
 </body></html>
