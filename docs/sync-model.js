@@ -88,20 +88,23 @@ export function applyLibraryValues(state, values) {
   const localIDs = key => (state[key] || []).filter(id => id.startsWith('local-'));
   next.liked = [...ids('liked'), ...localIDs('liked')]; next.saved = [...ids('saved'), ...localIDs('saved')];
   next.albums = ids('savedAlbum'); next.artists = ids('followedArtist'); next.artistPins = ids('artistPin');
-  next.extraSongs = Object.fromEntries(Object.entries(state.extraSongs || {}).filter(([, song]) => song.source === 'local'));
+  // Browsed metadata is a device cache, not saved-library membership. Keep it
+  // through same-account sync so open collections and playback retain their tracks.
+  // Account activation resets state before applying another account's records.
+  next.extraSongs ||= {};
   for (const song of list('song')) {
     if (!song || !validID(song.id) || typeof song.title !== 'string' || typeof song.artist !== 'string' || song.source === 'local' || song.id.startsWith('local-')) throw Error('A synced song is invalid.');
     if (song.source !== 'youtube') throw Error('This recording source is not supported by account sync.');
     if (song.artwork && !isImageURL(song.artwork)) delete song.artwork;
     next.extraSongs[song.id] = song;
   }
-  next.extraAlbums = {};
+  next.extraAlbums ||= {};
   for (const album of list('album')) {
     if (!album || !validID(album.id) || typeof album.title !== 'string' || typeof album.artist !== 'string' || !Array.isArray(album.tracks) || !album.tracks.every(validID)) throw Error('A synced album is invalid.');
     if (album.artwork && !isImageURL(album.artwork)) delete album.artwork;
     next.extraAlbums[album.id] = album;
   }
-  next.extraArtists = {};
+  next.extraArtists ||= {};
   for (const artist of list('artist')) {
     if (!artist || !validID(artist.id) || typeof artist.name !== 'string') throw Error('A synced artist is invalid.');
     if (artist.artwork && !isImageURL(artist.artwork)) delete artist.artwork;

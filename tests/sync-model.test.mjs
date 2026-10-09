@@ -34,6 +34,35 @@ test('local audio references and device settings survive cloud updates',()=>{
  const values=libraryValues(baseState(),{songs:[song],albums:[],artists:[]}),next=applyLibraryValues(state,values);
  assert.equal(next.settings.youtubeKey,'do-not-upload');assert.ok(next.saved.includes('local-file'));assert.equal(next.extraSongs['local-file'].source,'local');
 });
+test('browsed albums keep all tracks through playback and periodic sync without becoming saved',()=>{
+ const catalog={songs:[],albums:[],artists:[]},state=baseState();state.liked=[];
+ const second={...song,id:'lmnopqrstuv',title:'Second song'};
+ const album={id:'MPREbrowse',title:'Album',artist:'Artist',tracks:[song.id,second.id],complete:true};
+ state.extraSongs={[song.id]:song,[second.id]:second};state.extraAlbums={[album.id]:album};state.extraArtists.UCartist={id:'UCartist',name:'Artist'};
+ let next=applyLibraryValues(state,libraryValues(state,catalog));
+ next.recent=[{id:song.id,at:100}];
+ for(let i=0;i<3;i++)next=applyLibraryValues(next,libraryValues(next,catalog));
+ assert.deepEqual(next.extraAlbums[album.id],album);
+ assert.deepEqual(album.tracks.map(id=>next.extraSongs[id].title),['Song','Second song']);
+ assert.equal(next.extraArtists.UCartist.name,'Artist');
+ assert.deepEqual(next.albums,[]);
+ const uploaded=libraryValues(next,catalog);
+ assert.ok(uploaded['song:'+song.id]);
+ assert.equal(uploaded['song:'+second.id],undefined);
+ assert.equal(uploaded['album:'+album.id],undefined);
+ assert.equal(uploaded['artist:UCartist'],undefined);
+});
+test('sync removals still remove saved membership while newer metadata overrides cached details',()=>{
+ const state=baseState();state.albums=['MPREbrowse'];state.extraSongs[song.id]=song;
+ state.extraAlbums.MPREbrowse={id:'MPREbrowse',title:'Album',artist:'Artist',tracks:[song.id]};
+ const next=applyLibraryValues(state,{['song:'+song.id]:{...song,title:'Updated title'}});
+ assert.deepEqual(next.liked,[]);assert.deepEqual(next.albums,[]);
+ assert.equal(next.extraSongs[song.id].title,'Updated title');
+ assert.ok(next.extraAlbums.MPREbrowse);
+ // Account activation supplies the new account's own state, never the outgoing account's cache.
+ const other=applyLibraryValues(baseState(),{});
+ assert.equal(other.extraAlbums.MPREbrowse,undefined);assert.equal(other.extraSongs[song.id],undefined);
+});
 test('native-only records survive a web edit',()=>{
  let document=updateDocument(emptyDocument(),{},{['artistFolder:'+B]:{id:B,name:'Native only'},...libraryValues(baseState(),{songs:[song],albums:[],artists:[]})},A);
  const applied=applyLibraryValues(baseState(),valuesOf(document)),previous=libraryValues(applied,{songs:[song],albums:[],artists:[]});applied.liked=[];

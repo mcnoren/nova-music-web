@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {NovaSyncClient} from '../docs/sync-client.js';
-import {emptyDocument, updateDocument, valuesOf} from '../docs/sync-model.js';
+import {emptyDocument, updateDocument, valuesOf, libraryValues, applyLibraryValues} from '../docs/sync-model.js';
 const A='00000000-0000-4000-8000-000000000001',B='00000000-0000-4000-8000-000000000002';
 class Storage { constructor(){this.data=new Map()}getItem(k){return this.data.get(k)??null}setItem(k,v){this.data.set(k,String(v))}removeItem(k){this.data.delete(k)} }
 function setup() { globalThis.localStorage=new Storage();globalThis.sessionStorage=new Storage();globalThis.window={addEventListener(){}};globalThis.location={hostname:"example.test"};globalThis.document={addEventListener(){},visibilityState:'visible'};Object.defineProperty(globalThis,'navigator',{value:{onLine:true},configurable:true}); }
@@ -29,6 +29,24 @@ test('changes made during a write are uploaded before sync reports success',asyn
  setup();const c=client();let remote=emptyDocument(),revision=0,writes=0;
  c.instance.request=async(path,options)=>{if(path.startsWith('/rest/v1/nova_music_libraries'))return revision?[{document:remote,revision}]:[];if(path.includes('/rpc/')){if(++writes===1)c.edit({...valuesOf(options.body.library_document),'saved:abcdefghijk':{id:'abcdefghijk',order:0}});remote=options.body.library_document;return{conflict:false,revision:++revision}}};
  await c.instance.activate(session(A),false);c.edit({'liked:abcdefghijk':{id:'abcdefghijk',order:0}});await c.instance.sync();assert.ok(valuesOf(remote)['saved:abcdefghijk']);assert.equal(writes,2);c.close();
+});
+test('playback, periodic polling and returning to a tab preserve a browsed album',async(t)=>{
+ setup();t.mock.timers.enable({apis:['setTimeout','setInterval']});
+ let visibilityChanged;document.addEventListener=(name,callback)=>{if(name==='visibilitychange')visibilityChanged=callback};
+ let state={liked:[],saved:[],albums:[],artists:[],artistPins:[],playlists:[],folders:[],releaseChoices:{},discChoices:{},recent:[],extraSongs:{},extraAlbums:{},extraArtists:{},genres:[]};
+ const catalog={songs:[],albums:[],artists:[]};
+ const instance=new NovaSyncClient({url:'https://example.supabase.co',publishableKey:'sb_publishable_test_fixture'},{values:()=>libraryValues(state,catalog),activate(){},apply:values=>{state=applyLibraryValues(state,values)}});
+ let remote=emptyDocument(),revision=0,reads=0;
+ instance.request=async(path,options)=>{if(path.startsWith('/rest/v1/nova_music_libraries')){reads++;return revision?[{document:remote,revision}]:[]}remote=options.body.library_document;return{revision:++revision,conflict:false}};
+ t.after(()=>{clearInterval(instance.poll);clearTimeout(instance.timer)});
+ await instance.activate(session(A),false);
+ for(const id of ['abcdefghijk','lmnopqrstuv'])state.extraSongs[id]={id,title:id,artist:'Artist',source:'youtube'};
+ state.extraAlbums.MPREbrowse={id:'MPREbrowse',title:'Album',artist:'Artist',tracks:Object.keys(state.extraSongs)};
+ const check=()=>{assert.equal(state.extraAlbums.MPREbrowse.tracks.filter(id=>state.extraSongs[id]).length,2);assert.deepEqual(state.albums,[]);assert.equal(instance.status,'synced')};
+ state.recent=[{id:'abcdefghijk',at:100}];instance.changed();t.mock.timers.tick(701);await instance.inflight;check();
+ let before=reads;t.mock.timers.tick(30001);await instance.inflight;assert.ok(reads>before);check();
+ document.visibilityState='hidden';visibilityChanged();before=reads;t.mock.timers.tick(1);assert.equal(reads,before);
+ document.visibilityState='visible';visibilityChanged();t.mock.timers.tick(1);await instance.inflight;assert.ok(reads>before);check();
 });
 test('a secret key cannot initialize a browser sync client',()=>{setup();assert.throws(()=>new NovaSyncClient({url:'https://example.supabase.co',publishableKey:'sb_secret_never_public'},{}),/secret key/)});
 test('password login imports only after a valid session and never persists the password',async()=>{

@@ -10,6 +10,10 @@ shutil.copytree(PUBLIC, PREVIEW, dirs_exist_ok=True)
 (PREVIEW / 'sync-config.js').write_text("export const syncConfig = Object.freeze({url:'http://127.0.0.1:4173',publishableKey:'sb_publishable_LOCAL_TEST_ONLY'});\n")
 ACCOUNTS = {'first@example.test':'00000000-0000-4000-8000-000000000001', 'second@example.test':'00000000-0000-4000-8000-000000000002'}
 LIBRARIES = {}
+SYNC_READS = 0
+# Deliberately outside the bundled catalog: all tracks must survive library sync.
+ALBUM = {'id':'MPREsyncfixture','title':'Sync regression album','artist':'Fixture Artist','year':'2026','artwork':'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg'}
+TRACKS = [{'id':id,'title':title,'artist':ALBUM['artist'],'source':'youtube','duration':120,'artwork':ALBUM['artwork']} for id,title in [('M7lc1UVf-VE','First fixture track'),('abcdefghijk','Second fixture track')]]
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs): super().__init__(*args, directory=str(PREVIEW), **kwargs)
@@ -21,9 +25,12 @@ class Handler(SimpleHTTPRequestHandler):
         return next(({'id':user,'email':email} for email,user in ACCOUNTS.items() if user==token),None)
     def session(self,email): return {'access_token':'fixture-'+ACCOUNTS[email],'refresh_token':'fixture-'+ACCOUNTS[email],'expires_at':time.time()+3600,'user':{'id':ACCOUNTS[email],'email':email}}
     def do_GET(self):
+        global SYNC_READS
         path=urlparse(self.path)
+        if path.path=='/__fixture__/stats':return self.reply({'sync_reads':SYNC_READS})
         if path.path=='/auth/v1/user': return self.reply(self.identity() or {'msg':'Test sign-in required'},200 if self.identity() else 401)
         if path.path=='/rest/v1/nova_music_libraries':
+            SYNC_READS += 1
             user=self.identity()
             if not user:return self.reply({'msg':'Test sign-in required'},401)
             requested=parse_qs(path.query).get('user_id',[''])[0]
@@ -33,6 +40,8 @@ class Handler(SimpleHTTPRequestHandler):
         return self.reply(self.identity() or {},200 if self.identity() else 401)
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))) or '{}');path=urlparse(self.path).path
+        if path=='/functions/v1/music-search':
+            return self.reply({'songs':TRACKS,'albums':[] if body.get('op')=='browse' else [ALBUM],'artists':[],'playlists':[],'collection':ALBUM,'cursor':None})
         if path=='/auth/v1/token':
             if body.get('email') not in ACCOUNTS or body.get('password')!='Fixture-password-123!':return self.reply({'msg':'Invalid login credentials'},400)
             return self.reply(self.session(body['email']))
