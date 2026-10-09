@@ -57,9 +57,9 @@ export function searchScore(item,query,kind,index=0,top=null){
  return score;
 }
 export function rankSearch(result,query=result.correction||result.query||''){
- const ranked={...result},candidates=[];
+ const ranked={...result},candidates=[],artistIntent=(result.artists||[]).some(a=>normalizeSearch(a.name)===normalizeSearch(query));
  for(const kind of ['songs','artists','albums','playlists']){
-  const entries=(result[kind]||[]).map((item,index)=>({item,index,score:searchScore(item,query,kind,index,result.top)})).sort((a,b)=>b.score-a.score||a.index-b.index);
+  const entries=(result[kind]||[]).map((item,index)=>({item,index,score:searchScore(item,query,kind,index,result.top)-(artistIntent&&kind==='songs'&&!(' '+normalizeSearch(item.artist)+' ').includes(' '+normalizeSearch(query)+' ')?100:0)})).sort((a,b)=>b.score-a.score||a.index-b.index);
   ranked[kind]=entries.map(e=>e.item);
   if(entries.length)candidates.push({kind,id:entries[0].item.id,score:entries[0].score});
  }

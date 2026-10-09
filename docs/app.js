@@ -1,6 +1,6 @@
 import {defaultProfile, validateProfile, profileIcons, profileColors} from './profile.js?v=45be314c1460';
 import {parseLRC, lookupLyrics, lyricData as providerLyricData, activeLyric} from './lyrics.js?v=45a642e9a984';
-import {MusicSearchClient, rankLocal, mergeResults, normalizeSearch, rankSearch} from './music-search.js?v=2a509c8dfca8';
+import {MusicSearchClient, rankLocal, mergeResults, normalizeSearch, rankSearch} from './music-search.js?v=06b4299cb306';
 import {syncConfig} from './sync-config.js?v=ebe8169ae84b';
 import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=41702dc6acde';
 import {libraryValues, applyLibraryValues} from './sync-model.js?v=57b8b9d3a790';

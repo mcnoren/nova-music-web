@@ -73,4 +73,6 @@ test('artist searches keep official songs ahead of uploader titles that repeat t
  const {rankSearch}=await import('../docs/music-search.js');
  const songs=[{id:'upload',title:'Chappell Roan - Pink Pony Club (Lyrics)',artist:'Lost Panda',views:'20M views'},{id:'official',title:'Pink Pony Club',artist:'Chappell Roan',musicVideoType:'MUSIC_VIDEO_TYPE_ATV',views:'316M plays'}];
  assert.equal(rankSearch({songs},'Chappell Roan').songs[0].id,'official');
+ const artistSearch=rankSearch({songs:[{id:'namesake',title:'Chappell Roan',artist:'Down Periscope'},...songs],artists:[{id:'artist',name:'Chappell Roan'}]},'Chappell Roan');
+ assert.equal(artistSearch.songs[0].id,'official');assert.equal(artistSearch.top.kind,'artists');
 });
