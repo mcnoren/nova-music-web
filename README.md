@@ -72,7 +72,7 @@ GitHub hosts the public website and source. Supabase Auth handles sign-in; its d
 
 ### Activate
 
-1. Install and connect the Supabase plugin in Codex, or create/select a Supabase project in [the dashboard](https://supabase.com/dashboard). Use the same project for the app and browser.
+1. Sign in to [the Supabase dashboard](https://supabase.com/dashboard), then create or select a project. No Codex plugin is required; setup can be completed in the browser. Use the same project for the app and browser.
 2. Apply `supabase/migrations/202610090001_nova_music_sync.sql` through the project's SQL editor or migrations. It creates the table, ownership policy and revision-checked write function. No anonymous library access or direct client table writes are granted.
 3. Enable email sign-in. In Auth's **Magic Link** email template, include the one-time code `{{ .Token }}` in the message. Configure email delivery/SMTP for the intended users; the provider's default test email service may restrict recipients. Set the site URL to `https://mcnoren.github.io/nova-music-web/`.
 4. Put the project HTTPS URL and its **publishable key** in `docs/sync-config.js`. An older `anon` key is also supported. Never put a `service_role`, secret key, database password or personal access token in client files.
