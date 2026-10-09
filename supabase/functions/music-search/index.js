@@ -16,7 +16,7 @@ const image = item => {
   return '';
 };
 export function parseCatalog(root) {
-  const result={songs:[],artists:[],albums:[],playlists:[],correction:'',cursor:'',top:null};
+  const result={songs:[],artists:[],albums:[],playlists:[],correction:'',cursor:'',top:null,order:[]};
   const seen=new Set();
   const inherited=new Map();
   for(const node of walk(root)) {
@@ -39,6 +39,8 @@ export function parseCatalog(root) {
     if(!title)continue;
     const metadata=columns.slice(1).flatMap(c=>c?.runs||[]).concat(item.subtitle?.runs||[]);
     const parts=(columns.length>1?columns.slice(1).map(text).join(' • '):text(item.subtitle)).split(' • ').map(s=>s.trim());
+    // Search also contains user profiles and podcasts; these are not music artists/albums.
+    if(parts.some(p=>/^(Profile|Podcast|Episode)$/.test(p)))continue;
     const endpoint=item.navigationEndpoint || (columns[0]||item.title)?.runs?.[0]?.navigationEndpoint || {};
     const id=endpoint.browseEndpoint?.browseId;
     const artwork=image(item);
@@ -60,7 +62,7 @@ export function parseCatalog(root) {
       kind='songs';entry={id:videoId,title,artist:artist||'YouTube Music',artistId:browse(artistRuns[0])||inherited.get(item)?.id||'',album:album?.text||'',albumId:browse(album),artwork:artwork||`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,duration:fixed.concat(parts).map(duration).find(Boolean)||0,views:popularity,explicit:[...walk(item.badges||[])].some(n=>n.iconType==='MUSIC_EXPLICIT_BADGE'),musicVideoType,source:'youtube'};
     }
     if(seen.has(kind+entry.id))continue;
-    seen.add(kind+entry.id);result[kind].push(entry);
+    seen.add(kind+entry.id);result[kind].push(entry);result.order.push({kind,id:entry.id});
     if(node.musicCardShelfRenderer)result.top={kind,id:entry.id};
   }
   return result;
@@ -72,10 +74,10 @@ export function trackShelf(root) {
   }
   return root;
 }
-export async function musicRequest(endpoint, body, fetcher=fetch) {
+export async function musicRequest(endpoint, body, fetcher=fetch, timedLyrics=false) {
   const response=await fetcher(`https://music.youtube.com/youtubei/v1/${endpoint}?prettyPrint=false`,{
     method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0','Origin':'https://music.youtube.com','Accept-Language':'en-US,en;q=0.9'},
-    body:JSON.stringify({...body,context:{client:{clientName:'WEB_REMIX',clientVersion:'1.20240918.01.00',hl:'en',gl:'US'}}}),signal:AbortSignal.timeout(18000)
+    body:JSON.stringify({...body,context:{client:{clientName:timedLyrics?'ANDROID_MUSIC':'WEB_REMIX',clientVersion:timedLyrics?'7.21.50':'1.20240918.01.00',hl:'en',gl:'US'}}}),signal:AbortSignal.timeout(18000)
   });
   if(!response.ok)throw Error('YouTube Music is temporarily unavailable. Please retry.');
   return response.json();
@@ -83,29 +85,64 @@ export async function musicRequest(endpoint, body, fetcher=fetch) {
 export function validateRequest(input) {
   if(!input||typeof input!=='object')throw Error('Invalid request.');
   const op=input.op||'search',kind=input.kind||'All';
-  if(!['search','browse','discover'].includes(op))throw Error('Invalid operation.');
+  if(!['search','browse','discover','lyrics'].includes(op))throw Error('Invalid operation.');
   if(!['All',...Object.keys(FILTERS)].includes(kind))throw Error('Invalid search filter.');
   const query=typeof input.query==='string'?input.query.trim():'';
   if(op==='search'&&(!query||query.length>200))throw Error('Search must contain 1–200 characters.');
   const id=typeof input.id==='string'?input.id:'';
   if(op==='browse'&&!/^(MPRE[\w-]{1,150}|UC[\w-]{1,150}|VL[\w-]{1,150})$/.test(id))throw Error('Invalid music collection.');
+  if(op==='lyrics'&&!/^[A-Za-z0-9_-]{11}$/.test(id))throw Error('Invalid recording.');
+  const duration=Number(input.duration??0);
+  if(op==='lyrics'&&(!Number.isFinite(duration)||duration<0||duration>86400))throw Error('Invalid recording duration.');
+  if(input.providerOrder!==undefined&&typeof input.providerOrder!=='boolean')throw Error('Invalid search ordering.');
   const cursor=input.cursor||'';
   if(typeof cursor!=='string'||cursor.length>12000||/[\s<>]/.test(cursor))throw Error('Invalid page.');
-  return {op,kind,query,id,cursor};
+  return {op,kind,query,id,cursor,...(op==='lyrics'?{duration}:{}),...(input.providerOrder?{providerOrder:true}:{})};
+}
+export function parseMusicLyrics(root,{duration=0,recordingType=''}={}) {
+  const timed=[];let plain='',source='',valid=true;
+  for(const node of walk(root)){
+    if(Array.isArray(node.timedLyricsData)){
+      source=typeof node.sourceMessage==='string'?node.sourceMessage:text(node.sourceMessage);
+      for(const row of node.timedLyricsData){
+        if(typeof row.lyricLine!=='string'){valid=false;continue}
+        const cue=row.cueRange||{},start=Number(cue.startTimeMilliseconds)/1000,end=cue.endTimeMilliseconds===undefined?undefined:Number(cue.endTimeMilliseconds)/1000;
+        if(!Number.isFinite(start)||start<0||start>duration+2||end!==undefined&&(!Number.isFinite(end)||end<start||end>duration+2))valid=false;
+        timed.push({time:start,text:row.lyricLine,...(end!==undefined?{endTime:end}:{})});
+      }
+    }
+    const shelf=node.musicDescriptionShelfRenderer;
+    if(shelf){plain=text(shelf.description);source=text(shelf.footer)||source}
+  }
+  if(!plain&&!timed.length)return null;
+  return {plain:plain||timed.map(l=>l.text).join('\n'),lines:valid&&duration>0&&recordingType==='MUSIC_VIDEO_TYPE_ATV'?timed:[],source:source?source+' · YouTube Music':'YouTube Music',recordingType};
 }
 export async function execute(input, request=musicRequest) {
-  const {op,kind,query,id,cursor}=validateRequest(input);
+  const {op,kind,query,id,cursor,duration,providerOrder}=validateRequest(input);
+  if(op==='lyrics'){
+    const next=await request('next',{videoId:id,isAudioOnly:true});
+    let browseID='',recordingType='';
+    for(const node of walk(next)){
+      const linked=node.browseEndpoint?.browseId;
+      if(typeof linked==='string'&&/^MPLY[\w-]{1,4000}$/.test(linked))browseID=linked;
+      const item=node.playlistPanelVideoRenderer;
+      if(item?.videoId===id)recordingType=item.navigationEndpoint?.watchEndpoint?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig?.musicVideoType||'';
+    }
+    const root=browseID?await request('browse',{browseId:browseID},undefined,true):null;
+    return {songs:[],artists:[],albums:[],playlists:[],lyrics:parseMusicLyrics(root,{duration,recordingType}),recordingType};
+  }
   if(op==='search') {
     const requests=[request('search',cursor?{continuation:cursor}:{query,...(FILTERS[kind]?{params:FILTERS[kind]}:{})})];
-    if(kind==='All')requests.push(request('search',{query,params:FILTERS.Songs}));
+    if(kind==='All'&&!providerOrder)requests.push(request('search',{query,params:FILTERS.Songs}));
     const responses=await Promise.all(requests),result=parseCatalog(responses[0]);
-    if(kind==='All'){
+    if(kind==='All'&&!providerOrder){
       const tracks=parseCatalog(responses[1]);
       const trackById=new Map(tracks.songs.map(s=>[s.id,s]));
       result.songs=[...new Map([...tracks.songs,...result.songs].map(s=>[s.id,{...s,...trackById.get(s.id),views:trackById.get(s.id)?.views||s.views}])).values()];
       result.correction ||= tracks.correction;
       result.cursor=''; // Each overview shelf has its own page; filters paginate.
     }
+    if(providerOrder){result.providerOrder=true;if(kind==='All')result.cursor='';}
     return result;
   }
   const root=await request('browse',cursor?{continuation:cursor}:{browseId:op==='discover'?'FEmusic_explore':id});

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {defaultProfile,validateProfile} from '../docs/profile.js';
 import {libraryValues,applyLibraryValues} from '../docs/sync-model.js';
-import {parseLRC,activeLyric,lookupLyrics,lyricData,chooseLyrics} from '../docs/lyrics.js';
+import {parseLRC,activeLyric,lookupLyrics,lyricData,chooseLyrics,normalizedLines,playbackSample,preferredAudio} from '../docs/lyrics.js';
 const state=()=>({liked:[],saved:[],albums:[],artists:[],artistPins:[],playlists:[],folders:[],recent:[],extraSongs:{},extraAlbums:{},extraArtists:{},settings:{},profile:defaultProfile()});
 const catalog={songs:[],albums:[],artists:[]};
 test('profile icon and photo round-trip across devices without replacing them on a fresh sign-in',()=>{
@@ -42,4 +42,25 @@ test('lyric requests forward cancellation and unrelated lyric results are reject
  const controller=new AbortController();controller.abort();
  await assert.rejects(lookupLyrics(song,{signal:controller.signal,fetcher:async(url,{signal})=>{assert.equal(signal.aborted,true);throw new DOMException('Aborted','AbortError')}}),/Aborted/);
  assert.equal(chooseLyrics([{...record,artistName:'Someone else'}],song),null);
+});
+test('lyric highlighting ends with the provider cue and resumes after an instrumental gap or backward seek',()=>{
+ const lines=normalizedLines([{time:0,endTime:15,text:'♪'},{time:15.35,endTime:22.62,text:'Example one'},{time:25,endTime:30,text:'Example two'}]);
+ assert.equal(lines[0].text,'');assert.equal(activeLyric(lines,23),-1);assert.equal(activeLyric(lines,25),2);assert.equal(activeLyric(lines,16),1);
+ assert.equal(activeLyric(lines,NaN),-1);
+ const dupe=normalizedLines([{time:1,text:'A'},{time:1,text:''},{time:1,text:'B'}]);assert.equal(dupe[0].text,'A\nB');
+});
+test('the playback clock rejects the previous YouTube recording during a song switch',()=>{
+ const song={id:'newtrack123',source:'youtube',duration:225};let id='oldtrack123';
+ const player={getVideoUrl:()=> 'https://www.youtube.com/watch?v='+id,getDuration:()=>251,getCurrentTime:()=>140};
+ assert.deepEqual(playbackSample(song,player),{position:0,duration:225,confirmed:false});
+ id=song.id;assert.equal(playbackSample(song,player,null,'').confirmed,false);assert.deepEqual(playbackSample(song,player),{position:140,duration:251,confirmed:true});
+ assert.deepEqual(playbackSample(null,player),{position:0,duration:0,confirmed:false});
+});
+test('music video playback resolves only the same artist/title official audio and preserves alternate versions',async()=>{
+ const video={id:'video123456',title:'drop dead (Official Video)',artist:'Olivia Rodrigo',source:'youtube',musicVideoType:'MUSIC_VIDEO_TYPE_OMV'};
+ const audio={id:'audio123456',title:'drop dead',artist:'Olivia Rodrigo',source:'youtube',musicVideoType:'MUSIC_VIDEO_TYPE_ATV'};
+ const request=async()=>({songs:[{...audio,id:'cover',artist:'Another singer'},audio]});
+ assert.equal((await preferredAudio(video,request)).id,audio.id);
+ assert.equal((await preferredAudio({...video,title:'drop dead (Live)'},request)).id,video.id);
+ assert.equal(lyricData({...record,duration:251},{...song,duration:251,source:'youtube',musicVideoType:'MUSIC_VIDEO_TYPE_OMV'}).lines.length,0);
 });

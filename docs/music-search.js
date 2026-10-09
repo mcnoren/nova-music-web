@@ -68,6 +68,12 @@ export function rankSearch(result,query=result.correction||result.query||''){
  ranked.categoryOrder=candidates.map(c=>c.kind);
  return ranked;
 }
+export function providerItems(result){
+ const items=[],seen=new Set();
+ for(const ref of result.order||[]){const item=result[ref.kind]?.find(item=>item.id===ref.id),key=ref.kind+':'+ref.id;if(!item||seen.has(key))continue;seen.add(key);items.push({kind:ref.kind,item});}
+ for(const kind of ['songs','artists','albums','playlists'])for(const item of result[kind]||[])if(!seen.has(kind+':'+item.id))items.push({kind,item});
+ return items;
+}
 export class MusicSearchClient {
   constructor(url,{fetcher=(...args)=>fetch(...args),now=Date.now,publicKey=''}={}){this.url=url;this.publicKey=publicKey;this.fetcher=fetcher;this.now=now;this.cache=new Map();}
   async request(input,{signal}={}){

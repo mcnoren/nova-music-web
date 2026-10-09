@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {rankLocal,mergeResults,MusicSearchClient} from '../docs/music-search.js';
-import {parseCatalog,execute,validateRequest,handler} from '../supabase/functions/music-search/index.js';
+import {rankLocal,mergeResults,MusicSearchClient,providerItems} from '../docs/music-search.js';
+import {parseCatalog,parseMusicLyrics,execute,validateRequest,handler} from '../supabase/functions/music-search/index.js';
 const catalog=JSON.parse(await readFile(new URL('../docs/catalog.json',import.meta.url)));
 test('local fallback tolerates transpositions, mixed fields, accents, and prefixes',()=>{
   assert.match(rankLocal(catalog.songs,'daft pnuk')[0].artist,/Daft Punk/);
@@ -75,4 +75,30 @@ test('artist searches keep official songs ahead of uploader titles that repeat t
  assert.equal(rankSearch({songs},'Chappell Roan').songs[0].id,'official');
  const artistSearch=rankSearch({songs:[{id:'namesake',title:'Chappell Roan',artist:'Down Periscope'},...songs],artists:[{id:'artist',name:'Chappell Roan'}]},'Chappell Roan');
  assert.equal(artistSearch.songs[0].id,'official');assert.equal(artistSearch.top.kind,'artists');
+});
+test('direct YouTube Music search keeps its featured result and mixed order without a second songs query',async()=>{
+ const raw={contents:[song('12345678901','Provider first'),{musicTwoRowItemRenderer:{title:{runs:[run('An album','MPREalbum')]},subtitle:{runs:[{text:'Album • An artist'}]}}},song('abcdefghijk','Provider second')]};
+ let calls=0;const result=await execute({query:'An album',providerOrder:true},async()=>{calls++;return raw});
+ assert.equal(calls,1);assert.equal(result.providerOrder,true);
+ assert.deepEqual(providerItems(result).map(e=>e.item.id),['12345678901','MPREalbum','abcdefghijk']);
+ assert.deepEqual(result.songs.map(s=>s.id),['12345678901','abcdefghijk']);
+ assert.deepEqual(providerItems({...result,order:[...result.order,result.order[0],{kind:'songs',id:'missing'}]}).map(e=>e.item.id),['12345678901','MPREalbum','abcdefghijk']);
+});
+test('YouTube user profiles and podcasts are never presented as music artists or playlists',()=>{
+ const item=(id,kind)=>({musicTwoRowItemRenderer:{title:{runs:[run('A name',id)]},subtitle:{runs:[{text:kind+' • A creator'}]}}});
+ const result=parseCatalog({contents:[item('UCprofile','Profile'),item('VLpodcast','Podcast'),item('UCartist','Artist')]});
+ assert.deepEqual(result.artists.map(a=>a.id),['UCartist']);assert.deepEqual(result.playlists,[]);
+});
+test('linked YouTube Music lyric cues retain millisecond starts and ends only for the song recording',async()=>{
+ const root={timedLyricsData:[{lyricLine:'Example',cueRange:{startTimeMilliseconds:'15350',endTimeMilliseconds:'22620'}}],sourceMessage:'Source: Example provider'};
+ const data=parseMusicLyrics(root,{duration:225,recordingType:'MUSIC_VIDEO_TYPE_ATV'});
+ assert.deepEqual(data.lines,[{time:15.35,endTime:22.62,text:'Example'}]);assert.match(data.source,/YouTube Music/);
+ assert.equal(parseMusicLyrics(root,{duration:251,recordingType:'MUSIC_VIDEO_TYPE_OMV'}).lines.length,0);
+ assert.equal(parseMusicLyrics(root,{duration:0,recordingType:'MUSIC_VIDEO_TYPE_ATV'}).lines.length,0);
+ assert.equal(parseMusicLyrics(root,{duration:10,recordingType:'MUSIC_VIDEO_TYPE_ATV'}).lines.length,0);
+ const calls=[];const result=await execute({op:'lyrics',id:'abcdefghijk',duration:225},async(endpoint,body,fetcher,timed)=>{
+  calls.push({endpoint,body,timed});return endpoint==='next'?{browseEndpoint:{browseId:'MPLYlinked'},playlistPanelVideoRenderer:{videoId:'abcdefghijk',navigationEndpoint:{watchEndpoint:{watchEndpointMusicSupportedConfigs:{watchEndpointMusicConfig:{musicVideoType:'MUSIC_VIDEO_TYPE_ATV'}}}}}}:root;
+ });
+ assert.equal(result.lyrics.lines[0].time,15.35);assert.equal(calls[1].timed,true);assert.equal(calls[1].body.browseId,'MPLYlinked');
+ for(const input of [{op:'lyrics',id:'https://evil.test'},{op:'lyrics',id:'abcdefghijk',duration:-1},{op:'lyrics',id:'abcdefghijk',duration:1e10},{query:'hi',providerOrder:'yes'}])assert.throws(()=>validateRequest(input));
 });
