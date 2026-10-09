@@ -1,0 +1,3 @@
+[functions.music-search]
+verify_jwt = true
+entrypoint = "./functions/music-search/index.js"

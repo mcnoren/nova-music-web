@@ -7,8 +7,8 @@ A browser adaptation of Nova Music’s Discover, Classical, and Library experien
 ## Features
 
 - Spotify-style desktop panels, persistent global search, live results, Top result/Songs grouping, browse tiles, library filters and phone navigation.
-- Discover with moods, genres, listening-based recommendations, recent listening, and a public YouTube Music catalog snapshot.
-- Search included songs, albums, and artists; paste any YouTube song link; optionally enable live YouTube Data API search and public playlist import.
+- Live Discover and mood results, genres, listening-based recommendations and recent listening, with a bundled fallback when the live source is unavailable.
+- Live YouTube Music search across songs, artists, albums and public playlists, spelling correction, lyric-fragment queries, filtered pagination and public playlist saving. No personal API key is required. Bundled metadata is only an offline fallback.
 - Classical: 20 composers, the app’s portrait assets and attribution, 153 bundled works, category folders, introductions, and recordings.
 - Persistent liked songs, saved songs and albums, followed artists, pins and artist ordering.
 - Artist release selection and disc selection when confirmed disc metadata exists. An empty selection stays empty.
@@ -28,7 +28,7 @@ This is a static GitHub Pages application, not an exact replacement for the nati
 
 - YouTube playback uses the official embedded player with its video hidden at the owner’s request. This is not an officially supported audio-only mode; behavior can vary by browser. Recordings can block embedding or vary by region; use the song’s YouTube Music link when unavailable. No audio extraction or ad bypass is used.
 - Background playback, lock-screen controls, AirPlay and fullscreen behavior depend on the browser and source. Siri, Live Activities, native mirroring and the iOS library sandbox cannot be reproduced on GitHub Pages.
-- The starting catalog is a dated snapshot, not the full live YouTube Music catalog. Live search and YouTube playlist imports require a user-provided YouTube Data API key. There is no proxy or server here. Some bundled albums contain selected recordings; these are explicitly labeled. Complete fetched albums are marked separately.
+- Live search and browsing use the public YouTube Music metadata interface through a Supabase Edge Function. This is an unofficial provider interface, as in the native app, and can change or become unavailable. It does not guarantee every song, private playlist, region-locked release or Spotify-only collection. Lyrics queries use the provider’s search relevance, not a complete licensed lyrics index. Bundled metadata remains an offline fallback. Albums and public playlists load their tracks on demand and expose additional pages. Saving an album or playlist loads every returned page before saving the collection.
 - Spotify import requires a configured Spotify developer client ID and user authorization. Short `spotify.link` redirects must first be opened to obtain the full playlist URL. Public preview scraping is not implemented. Provider eligibility and playlist access restrictions still apply.
 - Lyric availability varies. No songwriter, popularity or disc metadata is guessed. Artist selection applies to the available catalog.
 - Email/password account sync is configured for the website and native app. Without signing in, libraries remain device-local. Imported audio is never uploaded. Metadata backups omit API keys and do not include audio bytes.
@@ -37,7 +37,7 @@ This is a static GitHub Pages application, not an exact replacement for the nati
 
 Open **Settings** in the website.
 
-For live YouTube search, enable YouTube Data API v3 in a Google Cloud project, create a browser API key, and restrict it to `https://mcnoren.github.io/*` and the YouTube Data API. Enter the key in Settings; it stays in that browser and is never committed to this repository.
+Live search is already connected to the existing Supabase project. No user setup is needed. An optional YouTube Data API key can still be used for additional Spotify/text-import matching; restrict it to the website and YouTube Data API. It stays in that browser and is never committed.
 
 For Spotify, create an app in the Spotify developer dashboard and register exactly `https://mcnoren.github.io/nova-music-web/` as its redirect URI. Enter the public client ID in Settings, then choose Add music → Import from Spotify → Connect Spotify. No client secret is used; tokens and the PKCE verifier stay in session storage.
 
@@ -101,3 +101,11 @@ The public [Spotify web search page](https://open.spotify.com/search) was inspec
 Reference: [Spotify desktop/library/Now Playing overview](https://newsroom.spotify.com/2023-06-20/spotify-desktop-experience-redesign-your-library-now-playing-views-customize/) and [Your Library help](https://support.spotify.com/br-en/article/your-library/). Spotify changes its UI by account and experiment, so this reproduces the inspected layout rather than claiming every account screen is identical.
 
 The owner explicitly requested that embedded video remain hidden while playback stays in Nova. Now Playing displays artwork and no longer opens automatically or pauses YouTube when closed. The public YouTube IFrame sample played with advancing progress in local browser QA; individual recordings can still refuse embedding. Search typing/submission/clearing, empty results, filters, saved collections, profile/settings and desktop/phone layouts were checked. Existing account/model tests still pass.
+
+## Live search service (October 9, 2026)
+
+`supabase/functions/music-search/index.js` is deployed as `music-search` in the existing project. Gateway JWT verification remains enabled; clients send the existing public publishable key in the `apikey` header. The function never accesses account libraries, database credentials, user sessions, cookies or audio/video streams. Only fixed public YouTube Music search/browse endpoints are allowed, with validated operations, collection IDs and input sizes. CORS allows the deployed site and local preview ports 4173–4176. Search has a 450 ms debounce, cancellation, five-minute bounded client/server caches, provider-order deduplication and per-instance request throttling. Throttling is best effort per running instance, not a global abuse-prevention guarantee. Free-project quotas and provider availability still apply; no paid plan was enabled.
+
+To deploy this service to another project, deploy the checked-in function with `supabase/config.toml`, update the public project settings, and change the allowed website origin in the handler. No provider secret is required. The dashboard copy uses the same JavaScript in `index.ts`; dashboard deployment does not automatically follow GitHub commits.
+
+Validation includes 25 unit tests covering typo fallback, Unicode, available lyrics, rank preservation, cache expiry, provider parsing, pagination and input/origin limits, alongside existing sync tests. Live tests checked misspelled artist queries, lyric phrases, songs and albums outside the bundled fallback, public playlists, complete album tracks, pagination and browser playback.
