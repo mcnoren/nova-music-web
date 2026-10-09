@@ -1,0 +1,125 @@
+{
+  "portraits": [
+    {
+      "name": "bach",
+      "title": "Johann Sebastian Bach",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6a/Johann_Sebastian_Bach.jpg/330px-Johann_Sebastian_Bach.jpg",
+      "page": "https://en.wikipedia.org/wiki/Johann_Sebastian_Bach"
+    },
+    {
+      "name": "mozart",
+      "title": "Wolfgang Amadeus Mozart",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/ad/The_Mozart_Family_-_Wolfgang_Amadeus_Mozart_headshot.jpg/330px-The_Mozart_Family_-_Wolfgang_Amadeus_Mozart_headshot.jpg",
+      "page": "https://en.wikipedia.org/wiki/Wolfgang_Amadeus_Mozart"
+    },
+    {
+      "name": "beethoven",
+      "title": "Ludwig van Beethoven",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6e/Joseph_Karl_Stieler%27s_Beethoven_mit_dem_Manuskript_der_Missa_solemnis.jpg/330px-Joseph_Karl_Stieler%27s_Beethoven_mit_dem_Manuskript_der_Missa_solemnis.jpg",
+      "page": "https://en.wikipedia.org/wiki/Ludwig_van_Beethoven"
+    },
+    {
+      "name": "chopin",
+      "title": "Frédéric Chopin",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e8/Frederic_Chopin_photo.jpeg/330px-Frederic_Chopin_photo.jpeg",
+      "page": "https://en.wikipedia.org/wiki/Fr%C3%A9d%C3%A9ric_Chopin"
+    },
+    {
+      "name": "tchaikovsky",
+      "title": "Pyotr Ilyich Tchaikovsky",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/2/20/Tchaikovsky_by_Reutlinger_%28cropped%29.jpg/330px-Tchaikovsky_by_Reutlinger_%28cropped%29.jpg",
+      "page": "https://en.wikipedia.org/wiki/Pyotr_Ilyich_Tchaikovsky"
+    },
+    {
+      "name": "debussy",
+      "title": "Claude Debussy",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/c/c3/Claude_Debussy_by_Atelier_Nadar.jpg/330px-Claude_Debussy_by_Atelier_Nadar.jpg",
+      "page": "https://en.wikipedia.org/wiki/Claude_Debussy"
+    },
+    {
+      "name": "vivaldi",
+      "title": "Antonio Vivaldi",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/bd/Vivaldi.jpg/330px-Vivaldi.jpg",
+      "page": "https://en.wikipedia.org/wiki/Antonio_Vivaldi"
+    },
+    {
+      "name": "rachmaninoff",
+      "title": "Sergei Rachmaninoff",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/be/Sergei_Rachmaninoff_cph.3a40575.jpg/330px-Sergei_Rachmaninoff_cph.3a40575.jpg",
+      "page": "https://en.wikipedia.org/wiki/Sergei_Rachmaninoff"
+    },
+    {
+      "name": "handel",
+      "title": "George Frideric Handel",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/f/fa/George_Frideric_Handel_by_Balthasar_Denner.jpg/330px-George_Frideric_Handel_by_Balthasar_Denner.jpg",
+      "page": "https://en.wikipedia.org/wiki/George_Frideric_Handel"
+    },
+    {
+      "name": "haydn",
+      "title": "Joseph Haydn",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/05/Joseph_Haydn.jpg/330px-Joseph_Haydn.jpg",
+      "page": "https://en.wikipedia.org/wiki/Joseph_Haydn"
+    },
+    {
+      "name": "schubert",
+      "title": "Franz Schubert",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/0d/Franz_Schubert_by_Wilhelm_August_Rieder_1875.jpg/330px-Franz_Schubert_by_Wilhelm_August_Rieder_1875.jpg",
+      "page": "https://en.wikipedia.org/wiki/Franz_Schubert"
+    },
+    {
+      "name": "brahms",
+      "title": "Johannes Brahms",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/c/cc/JohannesBrahms_%28cropped%29.jpg/330px-JohannesBrahms_%28cropped%29.jpg",
+      "page": "https://en.wikipedia.org/wiki/Johannes_Brahms"
+    },
+    {
+      "name": "mendelssohn",
+      "title": "Felix Mendelssohn",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/c/c2/Felix_Mendelssohn_Bartholdy_by_Eduard_Magnus_%281833%29.jpg/330px-Felix_Mendelssohn_Bartholdy_by_Eduard_Magnus_%281833%29.jpg",
+      "page": "https://en.wikipedia.org/wiki/Felix_Mendelssohn"
+    },
+    {
+      "name": "liszt",
+      "title": "Franz Liszt",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/0d/Franz_Liszt_by_Herman_Biow-_1843.png/330px-Franz_Liszt_by_Herman_Biow-_1843.png",
+      "page": "https://en.wikipedia.org/wiki/Franz_Liszt"
+    },
+    {
+      "name": "dvorak",
+      "title": "Antonín Dvořák",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/12/Dvorak.jpg/330px-Dvorak.jpg",
+      "page": "https://en.wikipedia.org/wiki/Anton%C3%ADn_Dvo%C5%99%C3%A1k"
+    },
+    {
+      "name": "grieg",
+      "title": "Edvard Grieg",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/50/Edvard_Grieg_portrait_%28cropped%29.jpg/330px-Edvard_Grieg_portrait_%28cropped%29.jpg",
+      "page": "https://en.wikipedia.org/wiki/Edvard_Grieg"
+    },
+    {
+      "name": "ravel",
+      "title": "Maurice Ravel",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/78/Maurice_Ravel_1925.jpg/330px-Maurice_Ravel_1925.jpg",
+      "page": "https://en.wikipedia.org/wiki/Maurice_Ravel"
+    },
+    {
+      "name": "mahler",
+      "title": "Gustav Mahler",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/06/Photo_of_Gustav_Mahler_by_Moritz_N%C3%A4hr_01.jpg/330px-Photo_of_Gustav_Mahler_by_Moritz_N%C3%A4hr_01.jpg",
+      "page": "https://en.wikipedia.org/wiki/Gustav_Mahler"
+    },
+    {
+      "name": "sibelius",
+      "title": "Jean Sibelius",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/41/Jean_Sibelius_circa_1898-1900_%283x4_cropped%29.jpg/330px-Jean_Sibelius_circa_1898-1900_%283x4_cropped%29.jpg",
+      "page": "https://en.wikipedia.org/wiki/Jean_Sibelius"
+    },
+    {
+      "name": "price",
+      "title": "Florence Price",
+      "image": "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/1e/Composer_Florence_Price_%28cropped%29.jpg/330px-Composer_Florence_Price_%28cropped%29.jpg",
+      "page": "https://en.wikipedia.org/wiki/Florence_Price"
+    }
+  ],
+  "license": "Public-domain historical portraits, via Wikimedia Commons. The linked composer pages identify the original image files and creators."
+}
