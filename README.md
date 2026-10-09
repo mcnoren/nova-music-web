@@ -6,6 +6,7 @@ A browser adaptation of Nova Music’s Discover, Classical, and Library experien
 
 ## Features
 
+- Spotify-style desktop panels, persistent global search, live results, Top result/Songs grouping, browse tiles, library filters and phone navigation.
 - Discover with moods, genres, listening-based recommendations, recent listening, and a public YouTube Music catalog snapshot.
 - Search included songs, albums, and artists; paste any YouTube song link; optionally enable live YouTube Data API search and public playlist import.
 - Classical: 20 composers, the app’s portrait assets and attribution, 153 bundled works, category folders, introductions, and recordings.
@@ -25,7 +26,7 @@ A browser adaptation of Nova Music’s Discover, Classical, and Library experien
 
 This is a static GitHub Pages application, not an exact replacement for the native player.
 
-- YouTube playback uses its **visible official embedded player**. Recordings can block embedding or vary by region; use the song’s YouTube Music link when unavailable. No audio extraction, hidden video player or ad bypass is used.
+- YouTube playback uses the official embedded player with its video hidden at the owner’s request. This is not an officially supported audio-only mode; behavior can vary by browser. Recordings can block embedding or vary by region; use the song’s YouTube Music link when unavailable. No audio extraction or ad bypass is used.
 - Background playback, lock-screen controls, AirPlay and fullscreen behavior depend on the browser and source. Siri, Live Activities, native mirroring and the iOS library sandbox cannot be reproduced on GitHub Pages.
 - The starting catalog is a dated snapshot, not the full live YouTube Music catalog. Live search and YouTube playlist imports require a user-provided YouTube Data API key. There is no proxy or server here. Some bundled albums contain selected recordings; these are explicitly labeled. Complete fetched albums are marked separately.
 - Spotify import requires a configured Spotify developer client ID and user authorization. Short `spotify.link` redirects must first be opened to obtain the full playlist URL. Public preview scraping is not implemented. Provider eligibility and playlist access restrictions still apply.
@@ -92,3 +93,11 @@ Each sign-in lets you choose whether to add the device's existing library. Guest
 The working Nova Music app in the parent workspace has already been integrated. Reusable Swift files and integration instructions are in `native/`; this repository does not duplicate the entire native app.
 
 `npm test` exercises merging, deletions, account changes during requests, revision conflicts, in-flight edits, credentials exclusion and payload validation. `tests/sync-access.sql` exercises anonymous/account-isolation access against a **disposable** PostgreSQL database. Native `NovaMusicAccountSyncTests` checks shared-format persistence, validation, disc choices and exclusion of credentials. The browser sign-in, sign-out and two-session sync flow was tested with `tests/development-server.py`, a localhost-only fake service that sends no email. The real project now rejects anonymous reads/writes as expected; real signup email delivery and signed-in cross-device production sync still need verification with the owner’s own account. Password sign-in, failed login, confirmation-required signup, recovery isolation and credentials exclusion are covered by local tests. The native app must be rebuilt and installed to use these changes.
+
+## Interface research and redesign (October 9, 2026)
+
+The public [Spotify web search page](https://open.spotify.com/search) was inspected directly at desktop width. Nova follows its always-visible pill-shaped global search, home control, independent left library and central content panels, black/charcoal surfaces, green actions, round filters, colorful browse tiles, top-result/song split and persistent bottom transport. Nova retains its name, catalogs, classical works, imports and private account sync. Mobile search stays visible above scrolling results, and the profile menu exposes settings, account and imports.
+
+Reference: [Spotify desktop/library/Now Playing overview](https://newsroom.spotify.com/2023-06-20/spotify-desktop-experience-redesign-your-library-now-playing-views-customize/) and [Your Library help](https://support.spotify.com/br-en/article/your-library/). Spotify changes its UI by account and experiment, so this reproduces the inspected layout rather than claiming every account screen is identical.
+
+The owner explicitly requested that embedded video remain hidden while playback stays in Nova. Now Playing displays artwork and no longer opens automatically or pauses YouTube when closed. The public YouTube IFrame sample played with advancing progress in local browser QA; individual recordings can still refuse embedding. Search typing/submission/clearing, empty results, filters, saved collections, profile/settings and desktop/phone layouts were checked. Existing account/model tests still pass.
