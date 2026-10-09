@@ -1,4 +1,4 @@
-import {syncConfig} from './sync-config.js?v=be80b37c38b1';
+import {syncConfig} from './sync-config.js?v=82d0d58eebad';
 import {NovaSyncClient, accountLibraryKey} from './sync-client.js?v=d6c7fe3f7ac7';
 import {libraryValues, applyLibraryValues} from './sync-model.js?v=57c668b0b368';
 let accountClient = null;

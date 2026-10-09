@@ -1,0 +1,8 @@
+{
+  "projectRef": "dzwxbygmvingeqkuxpeq",
+  "url": "https://dzwxbygmvingeqkuxpeq.supabase.co",
+  "publishableKey": "sb_publishable_Fj0YMd1fYAvj00kEN0UnMg_VbdCNYd4",
+  "databaseReady": true,
+  "authenticationReady": false,
+  "migration": "202610090001_nova_music_sync.sql"
+}
