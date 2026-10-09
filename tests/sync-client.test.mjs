@@ -31,3 +31,22 @@ test('changes made during a write are uploaded before sync reports success',asyn
  await c.instance.activate(session(A),false);c.edit({'liked:abcdefghijk':{id:'abcdefghijk',order:0}});await c.instance.sync();assert.ok(valuesOf(remote)['saved:abcdefghijk']);assert.equal(writes,2);c.close();
 });
 test('a secret key cannot initialize a browser sync client',()=>{setup();assert.throws(()=>new NovaSyncClient({url:'https://example.supabase.co',publishableKey:'sb_secret_never_public'},{}),/secret key/)});
+test('password login imports only after a valid session and never persists the password',async()=>{
+ setup();const c=client({'liked:abcdefghijk':{id:'abcdefghijk',order:0}});const password='Fixture-password-123!';let remote=emptyDocument(),revision=0;
+ c.instance.request=async(path,options)=>{if(path.includes('grant_type=password')){assert.deepEqual(options.body,{email:'test@example.com',password});return session(A)}if(path.startsWith('/rest/v1/nova_music_libraries'))return revision?[{document:remote,revision}]:[];remote=options.body.library_document;return{revision:++revision,conflict:false}};
+ await c.instance.signIn('test@example.com',password,true);assert.equal(c.instance.user.id,A);assert.ok(valuesOf(remote)['liked:abcdefghijk']);assert.ok(!JSON.stringify([...localStorage.data,...sessionStorage.data]).includes(password));c.close();
+});
+test('failed password login and unconfirmed signup leave the device library alone',async()=>{
+ setup();const c=client({'liked:abcdefghijk':{id:'abcdefghijk',order:0}});c.instance.request=async(path)=>{if(path.includes('/signup'))return{user:session(A).user};throw Error('Invalid login credentials')};
+ await assert.rejects(c.instance.signIn('test@example.com','incorrect',true),/Invalid login/);await c.instance.createAccount('test@example.com','Fixture-password-123!');assert.equal(c.instance.user,null);assert.equal(c.applied.length,0);assert.equal(sessionStorage.data.size,0);c.close();
+});
+test('reauthentication rejects a different account without changing pending records',async()=>{
+ setup();const c=client();c.instance.request=async(path)=>path.includes('grant_type=password')?session(B):[];await c.instance.activate(session(A),false);c.edit({'liked:abcdefghijk':{id:'abcdefghijk',order:0}});await assert.rejects(c.instance.signIn('other@example.com','Fixture-password-123!',true),/current account/);assert.equal(c.instance.user.id,A);assert.ok(valuesOf(c.instance.document)['liked:abcdefghijk']);c.close();
+});
+test('password recovery verifies the account without activating or importing a library',async()=>{
+ setup();const c=client();let updated=false;c.instance.request=async(path,options)=>{if(path.includes('/logout'))return{};assert.equal(options.token,'recovery-fixture');if(options.method==='PUT'){updated=true;assert.equal(options.body.password,'Fixture-password-123!')}return session(A).user};
+ await c.instance.beginPasswordRecovery('recovery-fixture');assert.equal(c.instance.user,null);assert.equal(sessionStorage.data.size,0);await c.instance.finishPasswordRecovery('Fixture-password-123!');assert.ok(updated);assert.equal(c.instance.recovery,null);assert.equal(c.applied.length,0);c.close();
+});
+test('email returns never activate arbitrary sessions',async()=>{
+ const {parseAuthReturn}=await import('../docs/sync-client.js');assert.equal(parseAuthReturn('#discover'),null);assert.deepEqual(parseAuthReturn('#access_token=fixture&type=signup'),{type:'confirmed'});assert.deepEqual(parseAuthReturn('#access_token=fixture&type=recovery'),{type:'recovery',token:'fixture'});assert.deepEqual(parseAuthReturn('#access_token=fixture&type=magiclink'),{type:'confirmed'});
+});

@@ -1,4 +1,3 @@
-// Public configuration only. Never use a Supabase secret or service-role key.
-NOVA_SYNC_URL =
-NOVA_SYNC_PUBLISHABLE_KEY =
-// For HTTPS URLs, Xcode requires https:/$()/PROJECT.supabase.co
+// Public project settings only. Never use a secret/service-role key.
+NOVA_SYNC_URL = https:/$()/dzwxbygmvingeqkuxpeq.supabase.co
+NOVA_SYNC_PUBLISHABLE_KEY = sb_publishable_Fj0YMd1fYAvj00kEN0UnMg_VbdCNYd4

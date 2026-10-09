@@ -73,20 +73,30 @@ final class MusicAccountSync: ObservableObject {
             }
         }
     }
-    func sendCode(email: String) async throws {
+    private func validateEmail(_ email: String) throws {
         guard configured else { throw NovaSyncFailure.notConfigured }
         guard email.range(of:"^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",options:.regularExpression) != nil else { throw NovaSyncFailure.message("Enter a valid email address.") }
-        _ = try await request("/auth/v1/otp",method:"POST",body:["email":.string(email),"create_user":.bool(true)])
     }
-    func verifyCode(email: String, code: String, mergeGuest: Bool) async throws {
-        guard code.range(of:"^[0-9]{6,10}$",options:.regularExpression) != nil else { throw NovaSyncFailure.message("Enter the code from your email.") }
+    func signIn(email: String, password: String, mergeGuest: Bool) async throws {
+        try validateEmail(email)
+        guard !password.isEmpty else { throw NovaSyncFailure.message("Enter your password.") }
         let existingID = user?.id
         if existingID != nil { captureChanges(schedule:false) }
-        let response = try await request("/auth/v1/verify",method:"POST",body:["email":.string(email),"token":.string(code),"type":.string("email")])
+        let response = try await request("/auth/v1/token?grant_type=password",method:"POST",body:["email":.string(email),"password":.string(password)])
         let session = try response.decoded(Session.self)
         guard !session.access_token.isEmpty, !session.refresh_token.isEmpty else { throw NovaSyncFailure.invalidResponse }
         if let existingID, existingID != session.user.id { throw NovaSyncFailure.message("Sign in with the current account to preserve your pending changes.") }
         try await activate(session,mergeGuest:existingID == nil && mergeGuest)
+    }
+    func createAccount(email: String, password: String) async throws {
+        try validateEmail(email)
+        guard password.count >= 12 else { throw NovaSyncFailure.message("Choose a password with at least 12 characters.") }
+        let response = try await request("/auth/v1/signup",method:"POST",body:["email":.string(email),"password":.string(password)])
+        if let token = response["access_token"]?.string { _ = try? await request("/auth/v1/logout?scope=local",method:"POST",token:token) }
+    }
+    func sendPasswordReset(email: String) async throws {
+        try validateEmail(email)
+        _ = try await request("/auth/v1/recover",method:"POST",body:["email":.string(email)])
     }
     private func activate(_ session: Session, mergeGuest: Bool) async throws {
         guard let store else { return }
@@ -182,7 +192,7 @@ final class MusicAccountSync: ObservableObject {
     }
     private func request(_ path: String,method: String = "GET",body: [String:NovaSyncValue]? = nil,authenticated: Bool = false,token: String? = nil) async throws -> NovaSyncValue {
         guard configured, let url, let endpoint = URL(string:path,relativeTo:url) else { throw NovaSyncFailure.notConfigured }
-        var request = URLRequest(url:endpoint); request.httpMethod = method; request.timeoutInterval = 20
+        var request = URLRequest(url:endpoint,cachePolicy:.reloadIgnoringLocalCacheData); request.httpMethod = method; request.timeoutInterval = 20
         request.setValue(key,forHTTPHeaderField:"apikey"); request.setValue("application/json",forHTTPHeaderField:"Content-Type")
         let bearer = authenticated ? try await accessToken() : token
         if let bearer { request.setValue("Bearer \(bearer)",forHTTPHeaderField:"Authorization") }
@@ -190,7 +200,7 @@ final class MusicAccountSync: ObservableObject {
         let (data,response) = try await URLSession.shared.data(for:request)
         guard let http = response as? HTTPURLResponse, http.url?.host == url.host else { throw NovaSyncFailure.invalidResponse }
         let value = (try? JSONDecoder().decode(NovaSyncValue.self,from:data)) ?? .object([:])
-        guard (200..<300).contains(http.statusCode) else { throw NovaSyncFailure.message(http.statusCode == 401 ? "Your session expired. Sign in again to sync." : value["msg"]?.string ?? value["message"]?.string ?? "Sync could not finish. Your library remains saved here.") }
+        guard (200..<300).contains(http.statusCode) else { throw NovaSyncFailure.message(http.statusCode == 401 && authenticated ? "Your session expired. Sign in again to sync." : value["msg"]?.string ?? value["message"]?.string ?? value["error_description"]?.string ?? "Sync could not finish. Your library remains saved here.") }
         return value
     }
     private func keychainQuery() -> [String:Any] { [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:service,kSecAttrAccount as String:"nova-account"] }
@@ -213,8 +223,9 @@ final class MusicAccountSync: ObservableObject {
 struct MusicAccountSyncSection: View {
     @ObservedObject var account: MusicAccountSync
     @State private var email = ""
-    @State private var code = ""
-    @State private var sent = false
+    @State private var password = ""
+    @State private var confirmation = ""
+    @State private var creating = false
     @State private var reauth = false
     @State private var working = false
     @State private var addLibrary = true
@@ -225,28 +236,37 @@ struct MusicAccountSyncSection: View {
                 Text(user.email); LabeledContent("Library sync",value:account.status)
                 if let date = account.lastSynced { Text("Last synced \(date.formatted(date:.omitted,time:.shortened))").font(.footnote).foregroundStyle(.secondary) }
                 Button("Sync now") { Task { await account.sync() } }.disabled(working)
-                Button("Sign in again") { email = user.email; sent = false; reauth = true }.disabled(working)
+                Button("Sign in again") { email = user.email; creating = false; reauth = true; password = "" }.disabled(working)
                 Button("Sign out") { perform { try await account.signOut() } }.disabled(working)
             } else if !account.configured {
                 Text("Account sync is not available yet.")
-                Text("Your library stays on this device until account sync is activated.").font(.footnote).foregroundStyle(.secondary)
             } else {
-                Text("Sign in with the same email in the app and browser to share your library.").font(.footnote).foregroundStyle(.secondary)
-                TextField("Email address",text:$email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(sent || working || reauth)
-                if sent {
-                    TextField("Code from your email",text:$code).textContentType(.oneTimeCode).keyboardType(.numberPad)
-                    if !reauth { Toggle("Add this device’s library to my account",isOn:$addLibrary) }
-                    Button("Sign in") { perform { try await account.verifyCode(email:email.trimmingCharacters(in:.whitespaces),code:code.trimmingCharacters(in:.whitespaces),mergeGuest:!reauth && addLibrary); reauth = false; sent = false; code = "" } }.disabled(working)
-                    Button(reauth ? "Cancel" : "Use another email") { sent = false; reauth = false; code = "" }.disabled(working)
-                } else { Button("Email me a sign-in code") { perform { try await account.sendCode(email:email.trimmingCharacters(in:.whitespaces)); sent = true } }.disabled(working) }
+                Text("Use the same account in the app and browser to share your library.").font(.footnote).foregroundStyle(.secondary)
+                TextField("Email address",text:$email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(working || reauth)
+                SecureField(creating ? "New password (12+ characters)" : "Password",text:$password).textContentType(creating ? .newPassword : .password).disabled(working)
+                if creating { SecureField("Confirm password",text:$confirmation).textContentType(.newPassword).disabled(working) }
+                if !creating && !reauth { Toggle("Add this device’s library to my account",isOn:$addLibrary).disabled(working) }
+                Button(creating ? "Create account" : "Sign in") { perform {
+                    let address = email.trimmingCharacters(in:.whitespacesAndNewlines)
+                    if creating {
+                        guard password == confirmation else { throw NovaSyncFailure.message("The passwords do not match.") }
+                        try await account.createAccount(email:address,password:password)
+                        creating = false; message = "Check your email to confirm your account, then sign in here."
+                    } else { try await account.signIn(email:address,password:password,mergeGuest:!reauth && addLibrary); reauth = false }
+                } }.disabled(working)
+                if reauth { Button("Cancel") { reauth = false; password = "" }.disabled(working) }
+                else {
+                    Button(creating ? "Back to sign in" : "Create account") { creating.toggle(); password = ""; confirmation = ""; message = nil }.disabled(working)
+                    Button("Forgot password?") { perform { try await account.sendPasswordReset(email:email.trimmingCharacters(in:.whitespacesAndNewlines)); message = "If an account exists, a reset link has been sent. Open it in your browser, choose a new password, then sign in here." } }.disabled(working)
+                }
             }
             if working { ProgressView() }
-            if let error = message ?? account.error { Text(error).font(.footnote).foregroundStyle(.red) }
+            if let text = message ?? account.error { Text(text).font(.footnote).foregroundStyle(.secondary) }
             Text("Sync includes library metadata. Imported audio, photos and playback settings remain on their original device.").font(.footnote).foregroundStyle(.secondary)
         }
     }
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
         working = true; message = nil
-        Task { do { try await operation() } catch { message = error.localizedDescription }; working = false }
+        Task { do { try await operation() } catch { message = error.localizedDescription }; password = ""; confirmation = ""; working = false }
     }
 }

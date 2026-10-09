@@ -40,20 +40,46 @@ export class NovaSyncClient {
       this.session = null; this.activeUser = null; sessionStorage.removeItem(SESSION); this.updateStatus('signed-out', 'Sign in again to access your account library.');
     }
   }
-  async sendCode(email) {
+  validateEmail(email) {
     this.requireConfiguration();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Error('Enter a valid email address.');
-    await this.request('/auth/v1/otp', {method: 'POST', body: {email, create_user: true}});
   }
-  async verifyCode(email, code, mergeGuest) {
-    this.requireConfiguration();
-    if (!/^\d{6,10}$/.test(code)) throw Error('Enter the code from your email.');
+  async signIn(email, password, mergeGuest) {
+    this.validateEmail(email);
+    if (!password) throw Error('Enter your password.');
     const existingID = this.user?.id;
     if (existingID) this.changed();
-    const session = await this.request('/auth/v1/verify', {method: 'POST', body: {email, token: code, type: 'email'}});
+    const session = await this.request('/auth/v1/token?grant_type=password', {method:'POST', body:{email,password}});
     if (!session.access_token || !session.refresh_token || !validUser(session.user)) throw Error('Sign-in did not return a valid session.');
     if (existingID && existingID !== session.user.id) throw Error('Sign in with the current account to preserve your pending changes.');
     await this.activate(session, existingID ? false : mergeGuest);
+  }
+  async createAccount(email, password) {
+    this.validateEmail(email); validatePassword(password);
+    const response = await this.request('/auth/v1/signup', {method:'POST',body:{email,password}});
+    // Always require a deliberate password sign-in before importing a device library.
+    if (response.access_token) {
+      try { await this.request('/auth/v1/logout?scope=local',{method:'POST',token:response.access_token}); } catch {}
+    }
+  }
+  async sendPasswordReset(email) {
+    this.validateEmail(email);
+    await this.request('/auth/v1/recover',{method:'POST',body:{email}});
+  }
+  async beginPasswordRecovery(accessToken) {
+    this.requireConfiguration();
+    const user = await this.request('/auth/v1/user',{token:accessToken});
+    if (!validUser(user)) throw Error('This password reset link is invalid. Request a new link.');
+    this.recovery = {token:accessToken,user};
+    return user.email;
+  }
+  async finishPasswordRecovery(password) {
+    validatePassword(password);
+    if (!this.recovery) throw Error('Request a new password reset link.');
+    const user = await this.request('/auth/v1/user',{method:'PUT',token:this.recovery.token,body:{password}});
+    if (!validUser(user) || user.id !== this.recovery.user.id) throw Error('Password reset could not be confirmed.');
+    const token = this.recovery.token; this.recovery = null;
+    try { await this.request('/auth/v1/logout?scope=local',{method:'POST',token}); } catch {}
   }
   async activate(session, mergeGuest) {
     if (!validUser(session.user)) throw Error('Invalid account identity.');
@@ -152,7 +178,7 @@ export class NovaSyncClient {
     const token = options.token || (options.authenticated ? await this.token() : null);
     const response = await fetch(this.config.url.replace(/\/$/, '') + path, {method: options.method || 'GET', headers: {apikey: this.config.publishableKey, 'Content-Type': 'application/json', ...(token ? {Authorization: 'Bearer ' + token} : {})}, ...(options.body ? {body: JSON.stringify(options.body)} : {}), cache: 'no-store', signal: AbortSignal.timeout(20000)});
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw Error(response.status === 401 ? 'Your session expired. Sign in again to sync.' : body.msg || body.message || body.error_description || 'Account sync could not complete. Your library remains saved here.');
+    if (!response.ok) throw Error(response.status === 401 && options.authenticated ? 'Your session expired. Sign in again to sync.' : body.msg || body.message || body.error_description || 'Account sync could not complete. Your library remains saved here.');
     return body;
   }
   assertCurrent(epoch, id) { if (epoch !== this.generation || id !== this.user?.id) throw Error('The account changed while syncing.'); }
@@ -160,3 +186,12 @@ export class NovaSyncClient {
 }
 function validUser(user) { return user && /^[0-9a-f-]{36}$/i.test(user.id) && typeof user.email === 'string'; }
 function isServiceKey(key) { try { return JSON.parse(atob(key.split('.')[1])).role === 'service_role'; } catch { return false; } }
+
+function validatePassword(password) { if (typeof password !== 'string' || password.length < 12) throw Error('Choose a password with at least 12 characters.'); }
+export function parseAuthReturn(hash) {
+  const params = new URLSearchParams(hash.replace(/^#/,''));
+  if (!params.has('access_token') && !params.has('error_description')) return null;
+  if (params.has('error_description')) return {type:'error',message:params.get('error_description').slice(0,500)};
+  if (params.get('type') === 'recovery' && params.get('access_token') && hash.length < 20000) return {type:'recovery',token:params.get('access_token')};
+  return {type:'confirmed'};
+}

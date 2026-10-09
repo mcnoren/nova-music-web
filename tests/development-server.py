@@ -29,12 +29,15 @@ class Handler(SimpleHTTPRequestHandler):
             requested=parse_qs(path.query).get('user_id',[''])[0]
             return self.reply([LIBRARIES[user['id']]] if requested=='eq.'+user['id'] and user['id'] in LIBRARIES else [])
         return super().do_GET()
+    def do_PUT(self):
+        return self.reply(self.identity() or {},200 if self.identity() else 401)
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))) or '{}');path=urlparse(self.path).path
-        if path=='/auth/v1/otp':return self.reply({} if body.get('email') in ACCOUNTS else {'msg':'Use first@example.test or second@example.test. This is a local fixture.'},200 if body.get('email') in ACCOUNTS else 400)
-        if path=='/auth/v1/verify':
-            if body.get('email') not in ACCOUNTS or body.get('token')!='123456':return self.reply({'msg':'Local test code is 123456'},400)
+        if path=='/auth/v1/token':
+            if body.get('email') not in ACCOUNTS or body.get('password')!='Fixture-password-123!':return self.reply({'msg':'Invalid login credentials'},400)
             return self.reply(self.session(body['email']))
+        if path=='/auth/v1/signup':return self.reply({'user':{'email':body.get('email')}})
+        if path=='/auth/v1/recover':return self.reply({})
         if path=='/auth/v1/logout':return self.reply({})
         if path=='/rest/v1/rpc/save_nova_music_library':
             user=self.identity()

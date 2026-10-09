@@ -1,6 +1,6 @@
 # Nova Music native account integration
 
-These files are copies of the implementation integrated into the Nova Music app in the parent workspace. Configure the same public Supabase URL/key as the website before rebuilding. See the repository README for the database migration and email template setup.
+These files are copies of the implementation integrated into the Nova Music app in the parent workspace. Configure the same public Supabase URL/key as the website before rebuilding. See the repository README for the database migration and email/password setup.
 
 For another copy of the native app:
 
@@ -13,3 +13,5 @@ For another copy of the native app:
 7. Add `MusicAccountSyncTests.swift` to the NovaMusicTests target to run the account-format tests.
 
 The app stores access/refresh tokens in Keychain with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Library metadata and offline pending changes are cached in app preferences. This does not encrypt library metadata end to end. Reauthentication uses the current account and retains its pending changes; sign-out restores the saved guest library after successful sync.
+
+The configured project is shared with the live website. Email confirmation/reset links open the website; afterward sign into the native app with your email and password. The built-in mail service is limited to project-team addresses until custom SMTP is configured.

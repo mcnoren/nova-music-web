@@ -1,3 +1,2 @@
-// Public project configuration only. Never put a Supabase secret/service-role key here.
-// Account sync stays unavailable until authentication is configured.
-export const syncConfig = Object.freeze({url: '',publishableKey: ''});
+// Public project configuration. Database access requires an authenticated account.
+export const syncConfig = Object.freeze({url:'https://dzwxbygmvingeqkuxpeq.supabase.co',publishableKey:'sb_publishable_Fj0YMd1fYAvj00kEN0UnMg_VbdCNYd4'});

@@ -30,7 +30,7 @@ This is a static GitHub Pages application, not an exact replacement for the nati
 - The starting catalog is a dated snapshot, not the full live YouTube Music catalog. Live search and YouTube playlist imports require a user-provided YouTube Data API key. There is no proxy or server here. Some bundled albums contain selected recordings; these are explicitly labeled. Complete fetched albums are marked separately.
 - Spotify import requires a configured Spotify developer client ID and user authorization. Short `spotify.link` redirects must first be opened to obtain the full playlist URL. Public preview scraping is not implemented. Provider eligibility and playlist access restrictions still apply.
 - Lyric availability varies. No songwriter, popularity or disc metadata is guessed. Artist selection applies to the available catalog.
-- Account sync is implemented for the website and native app, but needs the Supabase project configuration below before it becomes available. Without it, libraries remain device-local. Imported audio is never uploaded. Metadata backups omit API keys and do not include audio bytes.
+- Email/password account sync is configured for the website and native app. Without signing in, libraries remain device-local. Imported audio is never uploaded. Metadata backups omit API keys and do not include audio bytes.
 
 ## Provider setup
 
@@ -64,20 +64,22 @@ JavaScript syntax, catalog references, desktop and phone layout, browser console
 
 Composer image licensing and original sources are retained in `docs/assets/composers/Credits.json`. Catalog art remains hosted by its provider.
 
-## Account sync: activation required
+## Email/password account sync
 
-The private database has been provisioned in the free Nova Music Supabase project. The library migration has been applied, and live anonymous reads and writes were verified as denied. Public project connection details are in `supabase/project.json`. Authentication is not configured yet: the free default email service locks template editing, so email codes require custom SMTP or a different sign-in method. The published site deliberately keeps sign-in disabled while `docs/sync-config.js` is blank. Real account sign-in and email delivery have not been tested.
+The website and native source use the same free Nova Music Supabase project. The database migration is applied, email authentication and confirmation are enabled, and the minimum password length is 12. Public connection settings are in `supabase/project.json`, `docs/sync-config.js` and `native/SyncConfiguration.xcconfig`. No secret keys are published.
 
-GitHub hosts the public website and source. Supabase Auth handles sign-in; its database stores each account's library. The database is protected by row-level access rules and writes derive ownership from the signed-in user, not a caller-supplied user ID. This is private server-side storage, not end-to-end encryption. Do not commit personal libraries or secret keys to GitHub.
+GitHub hosts the public website and source. Supabase Auth handles passwords; its database stores each account's library. Row-level access rules restrict reads to the owner and the write function derives ownership from the authenticated user. This is private server-side storage, not end-to-end encryption. Do not commit personal libraries or secret keys to GitHub.
 
-### Activate
+### First account
 
-1. Sign in to [the Supabase dashboard](https://supabase.com/dashboard), then create or select a project. No Codex plugin is required; setup can be completed in the browser. Use the same project for the app and browser.
-2. Apply `supabase/migrations/202610090001_nova_music_sync.sql` through the project's SQL editor or migrations. It creates the table, ownership policy and revision-checked write function. No anonymous library access or direct client table writes are granted.
-3. Finish the chosen sign-in method. For the implemented email-code flow, configure custom SMTP first; new free projects cannot edit the default email templates without it. Then include the one-time code `{{ .Token }}` in Auth's **Magic Link** email template. The default test mail service is limited to project-team addresses and two emails per hour. The site URL has already been set to `https://mcnoren.github.io/nova-music-web/`. See [Supabase's email setup](https://supabase.com/docs/guides/auth/auth-smtp). GitHub sign-in or email/password would require corresponding client UI and provider configuration before enabling the website.
-4. Put the project HTTPS URL and its **publishable key** in `docs/sync-config.js`. An older `anon` key is also supported. Never put a `service_role`, secret key, database password or personal access token in client files.
-5. Put the same public values in `NovaMusic/SyncConfiguration.xcconfig` in the native workspace and rebuild the app. For an HTTPS URL in an xcconfig file, use `https:/$()/PROJECT.supabase.co` so `//` is not treated as a comment.
-6. Run `python3 scripts/version-assets.py`, commit, and publish the website. Verify real email sign-in, two-device edits and sign-out against the connected project before calling activation complete.
+1. Open the website → Sign in → Create account. Choose your own password with at least 12 characters.
+2. Confirm the email, then sign in with your email and password. Email confirmation links never automatically import a device library.
+3. Rebuild the native app with the included public configuration. In Settings → Nova Music account, sign in with the same credentials.
+4. Choose whether to add each device's existing library, then check a playlist or like appears on the other device.
+
+**Email limitation:** Supabase's default email service only sends to project-team addresses and is limited to two emails per hour. Use the email associated with your Supabase project account for initial signup. Additional users require custom SMTP; see [Supabase email setup](https://supabase.com/docs/guides/auth/auth-smtp). Ordinary password sign-in sends no email. “Forgot password?” sends a reset link that opens the website; recovery tokens are kept only in memory, validated, removed from the URL immediately, and never used to activate or import a library.
+
+For another project, apply `supabase/migrations/202610090001_nova_music_sync.sql`, enable email authentication and confirmation, set minimum password length to 12 and Site URL to the deployed website. Configure only the public project URL/publishable key in both clients. In xcconfig, write HTTPS as `https:/$()/PROJECT.supabase.co` to avoid a comment. Run `python3 scripts/version-assets.py` before publishing changed modules. Never put service-role/secret keys, database passwords or personal access tokens in client files.
 
 ### What syncs
 
@@ -89,4 +91,4 @@ Each sign-in lets you choose whether to add the device's existing library. Guest
 
 The working Nova Music app in the parent workspace has already been integrated. Reusable Swift files and integration instructions are in `native/`; this repository does not duplicate the entire native app.
 
-`npm test` exercises merging, deletions, account changes during requests, revision conflicts, in-flight edits, credentials exclusion and payload validation. `tests/sync-access.sql` exercises anonymous/account-isolation access against a **disposable** PostgreSQL database. Native `NovaMusicAccountSyncTests` checks shared-format persistence, validation, disc choices and exclusion of credentials. The browser sign-in, sign-out and two-session sync flow was tested with `tests/development-server.py`, a localhost-only fake service that sends no email. The real project now rejects anonymous reads/writes as expected; signed-in production activation remains unverified until authentication is configured.
+`npm test` exercises merging, deletions, account changes during requests, revision conflicts, in-flight edits, credentials exclusion and payload validation. `tests/sync-access.sql` exercises anonymous/account-isolation access against a **disposable** PostgreSQL database. Native `NovaMusicAccountSyncTests` checks shared-format persistence, validation, disc choices and exclusion of credentials. The browser sign-in, sign-out and two-session sync flow was tested with `tests/development-server.py`, a localhost-only fake service that sends no email. The real project now rejects anonymous reads/writes as expected; real signup email delivery and signed-in cross-device production sync still need verification with the owner’s own account. Password sign-in, failed login, confirmation-required signup, recovery isolation and credentials exclusion are covered by local tests. The native app must be rebuilt and installed to use these changes.
