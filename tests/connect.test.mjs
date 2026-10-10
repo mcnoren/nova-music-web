@@ -20,7 +20,7 @@ function setup(t){
    assert.equal(options.body.expected_revision,revision);remote=structuredClone(options.body.library_document);return{revision:++revision,conflict:false};
   };
   const connect=new NovaConnect(account,{id:crypto.randomUUID(),name,handoffTimeout:1000,snapshot:()=>local,freeze:async()=>{if(freezeHook)await freezeHook();local.playing=false},apply:async s=>{local=structuredClone(s);applies++},stop:()=>{local.playing=false;stops++},mirror:s=>{mirrored=s}});
-  devices.push(account);return{account,connect,get local(){return local},get applies(){return applies},get stops(){return stops},get mirrored(){return mirrored},get libraryApplies(){return libraryApplies},onFreeze:hook=>{freezeHook=hook},edit:value=>{library=value;account.changed()}};
+  t.after(()=>connect.reset());devices.push(account);return{account,connect,get local(){return local},get applies(){return applies},get stops(){return stops},get mirrored(){return mirrored},get libraryApplies(){return libraryApplies},onFreeze:hook=>{freezeHook=hook},edit:value=>{library=value;account.changed()}};
  }
  t.after(()=>devices.forEach(a=>{clearInterval(a.poll);clearTimeout(a.timer)}));
  async function activate(d){await d.account.activate({access_token:'fixture',refresh_token:'fixture',expires_at:Date.now()/1000+3600,user:{id:USER,email:'fixture@example.com'}},false);await d.connect.tick();}
@@ -142,11 +142,13 @@ test('handoff waits for the old engine and resumes at its frozen clock with a co
  assert.equal(frozen,true);assert.equal(mac.local.playing,false);assert.equal(phone.local.position,13.375);assert.equal(phone.local.playing,true);
  assert.deepEqual(phone.local.queue.map(s=>s.id),['abcdefghijk','lmnopqrstuv','abcdefghijk']);assert.equal(phone.local.index,1);assert.equal(phone.local.shuffle,true);assert.equal(phone.local.repeat,2);
 });
-test('an output that cannot acknowledge the paused position is never replaced by an estimate',async t=>{
+test('a recently closed output recovers at the last confirmed position without advancing its clock',async t=>{
  const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);await mac.connect.command(snapshot());await mac.account.sync();await phone.connect.tick();
  phone.connect.options.handoffTimeout=50;
- await assert.rejects(phone.connect.transfer(phone.connect.id),/did not confirm/);
- assert.equal(env.remote[SESSION_KEY].owner,mac.connect.id);assert.equal(phone.applies,0);
+ mac.local.position=37.125;mac.connect.publishStatus();await mac.account.sync();await phone.connect.tick();
+ await phone.connect.transfer(phone.connect.id);
+ assert.equal(env.remote[SESSION_KEY].owner,phone.connect.id);assert.equal(phone.local.position,37.125);assert.equal(phone.local.playing,true);
+ await mac.connect.tick();assert.equal(mac.local.playing,false);
 });
 
 test('a newer song selection cancels an in-progress handoff instead of being overwritten',async t=>{
@@ -154,4 +156,29 @@ test('a newer song selection cancels an in-progress handoff instead of being ove
  mac.onFreeze(async()=>{await mac.connect.command({...snapshot([song('lmnopqrstuv')]),position:0})});
  await assert.rejects(transfer(phone,phone.connect.id,mac),/Playback changed/);
  assert.equal(env.remote[SESSION_KEY].owner,mac.connect.id);assert.equal(env.remote[SESSION_KEY].snapshot.queue[0].id,'lmnopqrstuv');assert.equal(phone.applies,0);
+});
+
+test('explicitly choosing this device recovers from an expired browser heartbeat',async t=>{
+ const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
+ await mac.connect.command({...snapshot([song(),song('lmnopqrstuv')],1),position:48,playing:false});await mac.account.sync();
+ mac.account.setConnectValues({['connect:device.'+mac.connect.id]:{id:mac.connect.id,name:'Mac',at:Date.now()-100000}});await mac.account.sync();await phone.connect.tick();
+ await phone.connect.transfer(phone.connect.id);assert.equal(phone.local.position,48);assert.equal(phone.local.index,1);assert.equal(phone.local.playing,false);
+});
+test('remote play and pause show intent immediately and wait for matching actual telemetry',async t=>{
+ const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
+ await mac.connect.command({...snapshot(),playing:false});await mac.account.sync();await phone.connect.tick();
+ const play=phone.connect.setPlayingIntent(true);assert.equal(phone.connect.pendingPlaying,true);assert.equal(phone.connect.snapshot.playing,false);
+ await play;assert.equal(phone.connect.pendingPlaying,true);assert.equal(phone.connect.snapshot.playing,false);
+ await mac.connect.tick();await mac.account.sync();await phone.connect.tick();assert.equal(phone.connect.pendingPlaying,null);assert.equal(phone.connect.snapshot.playing,true);
+ const pause=phone.connect.setPlayingIntent(false);assert.equal(phone.connect.pendingPlaying,false);await pause;assert.equal(phone.connect.pendingPlaying,false);
+ await mac.connect.tick();await mac.account.sync();await phone.connect.tick();assert.equal(phone.connect.pendingPlaying,null);assert.equal(phone.connect.snapshot.playing,false);
+ phone.connect.reset();
+});
+test('rapid remote transport changes keep the latest intent and rejected sends clear the spinner',async t=>{
+ const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
+ await mac.connect.command({...snapshot(),playing:false});await mac.account.sync();await phone.connect.tick();
+ const play=phone.connect.setPlayingIntent(true),pause=phone.connect.setPlayingIntent(false);assert.equal(phone.connect.pendingPlaying,false);
+ await Promise.all([play,pause]);assert.equal(phone.connect.pendingPlaying,false);await mac.connect.tick();await mac.account.sync();await phone.connect.tick();assert.equal(phone.connect.pendingPlaying,null);
+ mac.account.setConnectValues({['connect:device.'+mac.connect.id]:{id:mac.connect.id,name:'Mac',at:Date.now()-100000}});await mac.account.sync();await phone.connect.tick();
+ await assert.rejects(phone.connect.setPlayingIntent(true),/unavailable/);assert.equal(phone.connect.pendingPlaying,null);phone.connect.reset();
 });

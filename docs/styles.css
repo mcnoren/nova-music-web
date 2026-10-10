@@ -65,3 +65,6 @@ button.review-row:hover,button.song-search-row:hover{background:#ffffff0e}.revie
 .fullscreen-lyrics .lyric-line.active{color:#fff;opacity:1;transform:none}.fullscreen-lyrics .lyric-line:hover{color:#fff}
 .fullscreen-lyrics-controls{display:flex;align-items:center;gap:32px;padding-top:18px;flex-shrink:0}.fullscreen-lyrics-controls .timeline{flex:1;max-width:900px}.fullscreen-lyrics .play-main{background:#fff;color:#101719}
 @media(max-width:650px){#fullscreen-lyrics-body{padding:12px 20px}.fullscreen-lyrics-layout{grid-template-columns:1fr;gap:14px;grid-template-rows:auto minmax(0,1fr)}.fullscreen-cover{display:none}.fullscreen-track h1{font-size:22px;margin:12px 0 4px}.fullscreen-track p{font-size:15px;margin:0}.fullscreen-lyrics-scroll{padding:14vh 0 20vh}.fullscreen-lyrics-controls{flex-direction:column;gap:10px}.fullscreen-lyrics-controls .timeline{width:100%}.fullscreen-lyrics .lyric-line{font-size:32px}}
+
+[data-action="toggle-play"]{position:relative}.transport-spinner{position:absolute;inset:2px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:transport-spin .8s linear infinite;pointer-events:none}.transport-pending svg{transform:scale(.72)}@keyframes transport-spin{to{transform:rotate(360deg)}}
+#output-device-list .menu-list button{display:flex;justify-content:space-between;align-items:center}

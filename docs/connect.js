@@ -43,7 +43,29 @@ export class NovaConnect {
     if(snapshot && Date.now()-(snapshot.at ?? session.at)>=ONLINE_MS)return {...snapshot,playing:false};
     return snapshot && !confirmed ? {...snapshot,playing:false} : snapshot;
   }
-  reset() { this.generation++; if(this.wasOwner || this.wasRemote || this.owner && this.owner!==this.id)this.options.stop();this.values={};this.preparing=null;this.acknowledgedHandoff=null;this.applied=null;this.wasOwner=false;this.wasRemote=false;this.lastPresence=null;this.lastStatus=null;this.options.changed?.(); }
+  get pendingPlaying() {
+    if(this.intent)return this.intent.playing;
+    const session=this.session,status=this.values[STATUS_KEY];
+    if(!this.remote || !session || session.snapshot.handoff || Date.now()-session.at>=15000)return null;
+    return status?.owner===session.owner && status.command===session.command && status.playing===session.snapshot.playing ? null : session.snapshot.playing;
+  }
+  setPlayingIntent(playing) {
+    const intent={playing};this.intent=intent;this.options.changed?.();
+    clearTimeout(this.intentTimer);
+    this.intentTimer=setTimeout(()=>{if(this.intent===intent){this.intent=null;this.options.changed?.();this.options.error?.('The output did not respond. Choose another output location.');}},15000);
+    return this.enqueue(async generation=>{
+      try{const session=await this.send(s=>({...s,position:snapshotPosition(s),playing}),undefined,generation);if(this.intent===intent){intent.command=session.command;this.settleIntent();}}
+      catch(error){if(this.intent===intent){this.intent=null;clearTimeout(this.intentTimer);this.options.changed?.();}throw error;}
+    });
+  }
+  settleIntent(){
+    const status=this.values[STATUS_KEY];
+    if(this.intent?.command && (this.session?.command!==this.intent.command || status?.owner===this.owner && status.command===this.intent.command && status.playing===this.intent.playing)){
+      this.intent=null;clearTimeout(this.intentTimer);
+    }
+    this.options.changed?.();
+  }
+  reset() { clearTimeout(this.intentTimer);this.intent=null;this.generation++; if(this.wasOwner || this.wasRemote || this.owner && this.owner!==this.id)this.options.stop();this.values={};this.preparing=null;this.acknowledgedHandoff=null;this.applied=null;this.wasOwner=false;this.wasRemote=false;this.lastPresence=null;this.lastStatus=null;this.options.changed?.(); }
   async receive(values) {
     this.values=Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('connect:')));
     const session=this.session, owner=session?.owner === this.id;
@@ -64,7 +86,7 @@ export class NovaConnect {
       }
       catch(error){if(generation===this.generation && this.owner===this.id)this.options.error?.(error.message);}
     } else if(this.remote && this.snapshot) this.options.mirror(this.snapshot, this.name, this.online);
-    this.options.changed?.();
+    this.settleIntent();
   }
   publishStatus() {
     if(this.preparing || !this.account.user || this.owner !== this.id || this.applied !== this.session?.command)return;
@@ -112,9 +134,11 @@ export class NovaConnect {
       if(output!==this.id&&!this.devices.some(d=>d.id===output))throw Error('That device is unavailable. Choose an output location.');
       if(!this.session)return this.send(this.options.snapshot(),output,generation);
       const wasPlaying=this.snapshot?.playing ?? this.session.snapshot.playing;
+      const checkpoint={...this.snapshot,playing:Boolean(wasPlaying),handoff:null};
+      if(!this.online)return this.send(checkpoint,output,generation,this.session.command);
       const handoff=crypto.randomUUID();
       const frozen=await this.send(s=>({...s,playing:false,handoff}),this.owner,generation);
-      const deadline=Date.now()+(this.options.handoffTimeout || 15000);
+      const deadline=Date.now()+(this.options.handoffTimeout || 4000);
       while(Date.now()<deadline){
         if(this.session?.command!==frozen.command)throw Error('Playback changed during transfer. Choose the output again.');
         const status=this.values[STATUS_KEY];
@@ -123,7 +147,7 @@ export class NovaConnect {
         }
         await new Promise(resolve=>setTimeout(resolve,250));await this.refresh(generation);
       }
-      throw Error('The current output did not confirm its position. Playback stays there; try again.');
+      return this.send(checkpoint,output,generation,frozen.command);
     });
   }
 }
