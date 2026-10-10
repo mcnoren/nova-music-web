@@ -106,3 +106,16 @@ test('phone lyrics include the exact recording, cues and timing calibration thro
  assert.equal(validConnectedLyrics({...lyrics,rate:0}),false);
  assert.equal(validSnapshot({...snapshot(),lyrics:{...lyrics,lines:[{time:NaN,text:'Invalid'}]}}),false);
 });
+
+test('an output reopening after an expired command restores the last confirmed song paused instead of showing an empty player',async t=>{
+ const env=setup(t),phone=env.device('Phone'),mac=env.device('Mac');await env.activate(phone);await env.activate(mac);
+ await phone.connect.command({...snapshot(),position:42});await phone.account.sync();
+ const session={...env.remote[SESSION_KEY],at:Date.now()-300000};
+ const status={...env.remote[STATUS_KEY],position:71,at:Date.now()-300000};
+ phone.account.setConnectValues({[SESSION_KEY]:session,[STATUS_KEY]:status});await phone.account.sync();await mac.connect.tick();
+ assert.equal(mac.mirrored.position,71);assert.equal(mac.mirrored.playing,false);assert.equal(snapshotPosition(status),71);
+ let restored;
+ const reopened=new NovaConnect(phone.account,{id:phone.connect.id,name:'Phone',snapshot:()=>restored||snapshot(),apply:async s=>{restored=s},stop(){},mirror(){}});
+ await reopened.receive(env.remote);
+ assert.equal(restored.queue[0].id,'abcdefghijk');assert.equal(restored.position,71);assert.equal(restored.playing,false);
+});

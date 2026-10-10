@@ -18,7 +18,8 @@ export function validSnapshot(value) {
     (value.at==null || Number.isFinite(value.at)) && (value.lyrics==null || validConnectedLyrics(value.lyrics));
 }
 export function snapshotPosition(snapshot, now = Date.now()) {
-  const elapsed = snapshot.playing ? Math.max(0, Math.min(90, (now - (snapshot.at || now)) / 1000)) : 0;
+  const age=now-(snapshot.at ?? now);
+  const elapsed = snapshot.playing && age<ONLINE_MS ? Math.max(0,age/1000) : 0;
   return Math.min(snapshot.queue[snapshot.index]?.duration || Infinity, snapshot.position + elapsed);
 }
 export class NovaConnect {
@@ -37,8 +38,9 @@ export class NovaConnect {
   get name() { return this.devices.find(d=>d.id === this.owner)?.name || 'Unavailable device'; }
   get snapshot() {
     const status=this.values[STATUS_KEY], session=this.session;
-    if (session && status?.owner === session.owner && status?.command === session.command && validSnapshot(status)) return status;
-    return session?.snapshot;
+    const snapshot=session && status?.owner === session.owner && status?.command === session.command && validSnapshot(status)?status:session?.snapshot;
+    if(snapshot && Date.now()-(snapshot.at ?? session.at)>=ONLINE_MS)return {...snapshot,playing:false};
+    return snapshot;
   }
   reset() { this.generation++; if(this.wasOwner || this.wasRemote || this.owner && this.owner!==this.id)this.options.stop();this.values={};this.applied=null;this.wasOwner=false;this.wasRemote=false;this.lastPresence=null;this.lastStatus=null;this.options.changed?.(); }
   async receive(values) {
@@ -46,7 +48,7 @@ export class NovaConnect {
     const session=this.session, owner=session?.owner === this.id;
     if(this.wasOwner && !owner || this.remote && !this.wasRemote)this.options.stop();
     this.wasOwner=owner;this.wasRemote=this.remote;
-    if(owner && session.command !== this.applied && Date.now()-session.at < COMMAND_MS && session.at <= Date.now()+10000) {
+    if(owner && session.command !== this.applied && (Date.now()-session.at < COMMAND_MS || this.applied===null) && session.at <= Date.now()+10000) {
       this.applied=session.command;
       const generation=this.generation;
       try { await this.options.apply(this.snapshot || session.snapshot); if(generation!==this.generation || this.owner!==this.id){this.options.stop();return;} this.publishStatus(); }

@@ -5,7 +5,7 @@ import {MusicSearchClient, rankLocal, mergeResults, normalizeSearch, rankSearch,
 import {syncConfig} from './sync-config.js?v=ebe8169ae84b';
 import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=2d0c4e8ad538';
 import {libraryValues, applyLibraryValues} from './sync-model.js?v=57b8b9d3a790';
-import {NovaConnect, snapshotPosition} from './connect.js?v=2023a46dcde3';
+import {NovaConnect, snapshotPosition} from './connect.js?v=7af1c7e50def';
 let accountClient = null, connect = null, applyingConnectedPlayback = false, mirroredPlayback = null;
 const authReturn=parseAuthReturn(location.hash);
 if(authReturn)history.replaceState(null,'',location.pathname+location.search);
@@ -332,7 +332,7 @@ async function playSongs(list,index=0){
  queue=list.map(s=>s.id);queueIndex=Math.max(0,Math.min(index,queue.length-1));await playCurrent();
 }
 const audioVersions=new Map();
-async function playCurrent(startAt=0){
+async function playCurrent(startAt=0,shouldPlay=true){
  if(connect?.remote && !applyingConnectedPlayback){await connect.command({...connectedPlaybackSnapshot(),position:0,playing:true});return;}
  let s=songs.get(queue[queueIndex]);if(!s)return;const token=++playToken;
  youtubeClockId='';audio.pause();yt?.pauseVideo?.();lyricAbort?.abort();++lyricToken;lastLyric=-1;
@@ -347,7 +347,7 @@ async function playCurrent(startAt=0){
  $('#seek').value=0;$('#elapsed').textContent='0:00';$('#duration').textContent=time(s.duration);
  if(s.source==='youtube'){
    $('#youtube-host').classList.remove('hidden');const player=await ensureYouTube();if(token!==playToken)return;
-   player.loadVideoById({videoId:s.id,startSeconds:startAt});player.setVolume(state.settings.volume);
+   if(shouldPlay)player.loadVideoById({videoId:s.id,startSeconds:startAt});else player.cueVideoById({videoId:s.id,startSeconds:startAt});player.setVolume(state.settings.volume);
  }else{
    $('#youtube-host').classList.add('hidden');
    if(s.source==='local'){const file=await fileStore('get',s.id);if(token!==playToken)return;if(!file)throw Error('This audio file is missing on this device. Import it again.');objectURL=URL.createObjectURL(file);audio.src=objectURL}else audio.src=s.previewUrl||s.url;
@@ -643,7 +643,7 @@ async function applyConnectedPlayback(snapshot){
   if(!selected){stopConnectedPlayback();queue=[];queueIndex=-1;current=null;$('#current-song').innerHTML='Choose a song';renderPanel();return;}
   const needsLoad=wasRemote||current?.id!==selected.id;
   remember(snapshot.queue);queue=snapshot.queue.map(s=>s.id);queueIndex=snapshot.index;shuffle=snapshot.shuffle;repeat=snapshot.repeat;
-  if(needsLoad)await playCurrent(snapshotPosition(snapshot));else {seekTo(snapshotPosition(snapshot));if(snapshot.playing&&!playing)await togglePlay();}
+  if(needsLoad)await playCurrent(snapshotPosition(snapshot),snapshot.playing);else {seekTo(snapshotPosition(snapshot));if(snapshot.playing&&!playing)await togglePlay();}
   if(!snapshot.playing){if(current?.source==='youtube')yt?.pauseVideo?.();else audio.pause();setPlaying(false);}
   renderPanel();updateOutputButton();
  }finally{applyingConnectedPlayback=false;}

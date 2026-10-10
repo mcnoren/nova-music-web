@@ -403,9 +403,11 @@ extension MusicAccountSync {
     var controlsRemoteOutput: Bool { user != nil && connectedSession.map { $0.owner != deviceID } == true }
     private var connectedSnapshot: MusicConnectedSnapshot? {
         guard let session = connectedSession else { return nil }
+        var snapshot = session.snapshot
         if let status = try? document.values["connect:status"]?.decoded(MusicConnectedSnapshot.self), status.valid,
-           status.owner == session.owner, status.command == session.command { return status }
-        return session.snapshot
+           status.owner == session.owner, status.command == session.command { snapshot = status }
+        if Date().timeIntervalSince1970 * 1000 - (snapshot.at ?? session.at) >= 90000 { snapshot.playing = false }
+        return snapshot
     }
     private func setConnection(_ values: [String:NovaSyncValue]) throws {
         guard user != nil else { return }
@@ -440,7 +442,7 @@ extension MusicAccountSync {
         wasOutput = isOutput
         if !controlsRemoteOutput { mirrorClockTask?.cancel(); mirrorClockTask = nil }
         if isOutput, let session, session.command != appliedCommand,
-           Date().timeIntervalSince1970 * 1000 - session.at < 120000, session.at <= Date().timeIntervalSince1970 * 1000 + 10000 {
+           (Date().timeIntervalSince1970 * 1000 - session.at < 120000 || appliedCommand == nil), session.at <= Date().timeIntervalSince1970 * 1000 + 10000 {
             appliedCommand = session.command
             applyPlayback(connectedSnapshot ?? session.snapshot)
             publishConnectionStatus()

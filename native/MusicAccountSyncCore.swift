@@ -169,7 +169,8 @@ struct MusicConnectedSnapshot: Codable, Equatable {
         (at?.isFinite ?? true) && (lyrics?.valid ?? true)
     }
     func advancedPosition(now: Double = Date().timeIntervalSince1970 * 1000) -> Double {
-        let elapsed = playing ? max(0,min(90,(now - (at ?? now)) / 1000)) : 0
+        let age = now - (at ?? now)
+        let elapsed = playing && age < 90000 ? max(0,age / 1000) : 0
         return min(queue.indices.contains(index) ? (queue[index].duration.flatMap { $0 > 0 && $0.isFinite ? $0 : nil } ?? .infinity) : .infinity,position + elapsed)
     }
 }
