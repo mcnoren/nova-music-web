@@ -38,9 +38,10 @@ export class NovaConnect {
   get name() { return this.devices.find(d=>d.id === this.owner)?.name || 'Unavailable device'; }
   get snapshot() {
     const status=this.values[STATUS_KEY], session=this.session;
-    const snapshot=session && status?.owner === session.owner && status?.command === session.command && validSnapshot(status)?status:session?.snapshot;
+    const confirmed=session && status?.owner === session.owner && status?.command === session.command && validSnapshot(status);
+    const snapshot=confirmed?status:session?.snapshot;
     if(snapshot && Date.now()-(snapshot.at ?? session.at)>=ONLINE_MS)return {...snapshot,playing:false};
-    return snapshot && !(status?.owner===session?.owner && status?.command===session?.command) ? {...snapshot,playing:false} : snapshot;
+    return snapshot && !confirmed ? {...snapshot,playing:false} : snapshot;
   }
   reset() { this.generation++; if(this.wasOwner || this.wasRemote || this.owner && this.owner!==this.id)this.options.stop();this.values={};this.preparing=null;this.acknowledgedHandoff=null;this.applied=null;this.wasOwner=false;this.wasRemote=false;this.lastPresence=null;this.lastStatus=null;this.options.changed?.(); }
   async receive(values) {
