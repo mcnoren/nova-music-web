@@ -9,193 +9,6 @@ struct YouTubeStreamSource: Sendable {
  var isLive:Bool? = nil
  var isHLS:Bool { url.pathExtension.lowercased()=="m3u8" || url.path.contains("hls") }
 }
-enum MediaRangeFailurePolicy {
-    static func isCancellation(_ error: Error) -> Bool {
-        error is CancellationError || ((error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled)
-    }
-    static func canRetry(_ error: Error) -> Bool {
-        if let http = error as? MediaRangeHTTPError { return http.status == 408 || http.status == 429 || (500...599).contains(http.status) }
-        guard (error as NSError).domain == NSURLErrorDomain else { return false }
-        return [NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost, NSURLErrorCannotConnectToHost, NSURLErrorNotConnectedToInternet].contains((error as NSError).code)
-    }
-}
-
-struct MediaRangeHTTPError: Error { let status: Int }
-
-/// Receive bounded network buffers in bulk, sharing connections across tracks.
-final class MediaRangeClient: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    static let shared = MediaRangeClient()
-    private let lock = NSLock()
-    private var transfers: [Int: Transfer] = [:]
-    private var session: URLSession!
-    init(configuration: URLSessionConfiguration = .ephemeral) {
-        super.init()
-        configuration.httpMaximumConnectionsPerHost = 6
-        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
-        session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
-    }
-
-    func data(for request: URLRequest, limit: Int) async throws -> (Data, HTTPURLResponse) {
-        for attempt in 0..<3 {
-            do { return try await transferData(for: request, limit: limit) }
-            catch {
-                guard !Task.isCancelled, MediaRangeFailurePolicy.canRetry(error), attempt < 2 else { throw error }
-                try await Task.sleep(for: .milliseconds(250 * (attempt + 1)))
-            }
-        }
-        throw URLError(.networkConnectionLost)
-    }
-
-    private func transferData(for request: URLRequest, limit: Int) async throws -> (Data, HTTPURLResponse) {
-        let transfer = Transfer(limit: limit)
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let task = session.dataTask(with: request)
-                guard transfer.begin(task, continuation: continuation) else { return }
-                lock.withLock { transfers[task.taskIdentifier] = transfer }
-                task.resume()
-            }
-        } onCancel: { transfer.finish(URLError(.cancelled), cancel: true) }
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
-        if let http = response as? HTTPURLResponse, ![200, 206].contains(http.statusCode) {
-            lock.withLock { transfers[dataTask.taskIdentifier] }?.finish(MediaRangeHTTPError(status: http.statusCode))
-            completionHandler(.cancel); return
-        }
-        guard let transfer = lock.withLock({ transfers[dataTask.taskIdentifier] }),
-              let http = response as? HTTPURLResponse, [200, 206].contains(http.statusCode),
-              response.expectedContentLength <= Int64(transfer.limit) else {
-            lock.withLock { transfers[dataTask.taskIdentifier] }?.finish(URLError(.badServerResponse))
-            completionHandler(.cancel); return
-        }
-        transfer.setResponse(http)
-        completionHandler(.allow)
-    }
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        lock.withLock { transfers[dataTask.taskIdentifier] }?.append(data)
-    }
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        let transfer = lock.withLock { transfers.removeValue(forKey: task.taskIdentifier) }
-        transfer?.finish(error)
-    }
-
-    private final class Transfer: @unchecked Sendable {
-        let limit: Int
-        private let lock = NSLock()
-        private var task: URLSessionDataTask?
-        private var continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>?
-        private var response: HTTPURLResponse?
-        private var buffer = Data()
-        private var finished = false
-        init(limit: Int) { self.limit = limit; buffer.reserveCapacity(limit) }
-        func begin(_ task: URLSessionDataTask, continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>) -> Bool {
-            let active = lock.withLock {
-                guard !finished else { return false }
-                self.task = task; self.continuation = continuation; return true
-            }
-            if !active { task.cancel(); continuation.resume(throwing: URLError(.cancelled)) }
-            return active
-        }
-        func setResponse(_ response: HTTPURLResponse) { lock.withLock { self.response = response } }
-        func append(_ data: Data) {
-            let overflow = lock.withLock {
-                guard !finished else { return false }
-                guard buffer.count + data.count <= limit else { return true }
-                buffer.append(data); return false
-            }
-            if overflow { finish(URLError(.dataLengthExceedsMaximum), cancel: true) }
-        }
-        func finish(_ error: Error?, cancel: Bool = false) {
-            let result: (CheckedContinuation<(Data, HTTPURLResponse), Error>?, URLSessionDataTask?, Data, HTTPURLResponse?)? = lock.withLock {
-                guard !finished else { return nil }
-                finished = true
-                let result = (continuation, task, buffer, response)
-                continuation = nil; task = nil; buffer = Data()
-                return result
-            }
-            guard let (continuation, task, data, response) = result else { return }
-            if cancel { task?.cancel() }
-            if let error { continuation?.resume(throwing: error) }
-            else if let response { continuation?.resume(returning: (data, response)) }
-            else { continuation?.resume(throwing: URLError(.badServerResponse)) }
-        }
-    }
-}
-
-/// YouTube's media servers reject AVFoundation's unbounded requests for some MP4
-/// tracks. Serve bounded byte ranges through the public AVAsset resource loader.
-@MainActor
-final class NativeMediaRangeLoader: NSObject, @preconcurrency AVAssetResourceLoaderDelegate {
-    let url: URL
-    var onFailure: ((Error) -> Void)?
-    private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
-    init(url: URL) { self.url = url; super.init() }
-    func asset() -> AVURLAsset {
-        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-        parts.scheme = "nova-media"
-        let asset = AVURLAsset(url: parts.url!)
-        asset.resourceLoader.setDelegate(self, queue: .main)
-        return asset
-    }
-    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource request: AVAssetResourceLoadingRequest) -> Bool {
-        let key = ObjectIdentifier(request)
-        tasks[key] = Task { [weak self] in
-            guard let self else { return }
-            defer { self.tasks[key] = nil }
-            do {
-                let parts = URLComponents(url: self.url, resolvingAgainstBaseURL: false)
-                var length = parts?.queryItems?.first { $0.name == "clen" }?.value.flatMap(Int64.init) ?? 0
-                let mime = parts?.queryItems?.first { $0.name == "mime" }?.value ?? "video/mp4"
-                let dataRequest = request.dataRequest
-                var offset = dataRequest.map { max($0.requestedOffset, $0.currentOffset) } ?? 0
-                let requestedEnd = dataRequest.map { $0.requestedOffset + Int64($0.requestedLength) } ?? 2
-                var end = length > 0 ? min(requestedEnd, length) : requestedEnd
-                if dataRequest?.requestsAllDataToEndOfResource == true && length > 0 { end = length }
-                repeat {
-                    try Task.checkCancellation()
-                    let upper = min(offset + 1_048_576, end) - 1
-                    guard upper >= offset else { break }
-                    var components = URLComponents(url: self.url, resolvingAgainstBaseURL: false)!
-                    components.queryItems = (components.queryItems ?? []).filter { $0.name != "range" } + [URLQueryItem(name: "range", value: "\(offset)-\(upper)")]
-                    var http = URLRequest(url: components.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
-                    // Use the media endpoint's range parameter alone. Applying
-                    // HTTP Range to that already bounded response causes 416
-                    // errors as soon as playback requests a nonzero offset.
-                    http.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-                    http.setValue("com.google.ios.youtube/21.03.4 (iPhone16,2; U; CPU iOS 18_0 like Mac OS X;)", forHTTPHeaderField: "User-Agent")
-                    let (data, response) = try await MediaRangeClient.shared.data(for: http, limit: Int(upper - offset + 1))
-                    if length == 0, let total = response.value(forHTTPHeaderField: "Content-Range")?.split(separator: "/").last.flatMap({ Int64($0) }) {
-                        length = total
-                        end = dataRequest?.requestsAllDataToEndOfResource == true ? total : min(requestedEnd, total)
-                    }
-                    if let information = request.contentInformationRequest {
-                        information.contentType = mime.hasPrefix("audio/") ? "public.mpeg-4-audio" : "public.mpeg-4"
-                        information.contentLength = length
-                        information.isByteRangeAccessSupported = true
-                    }
-                    try Task.checkCancellation()
-                    guard !data.isEmpty else { throw MacAudioError(message: "The video stream ended unexpectedly.") }
-                    dataRequest?.respond(with: data)
-                    offset += Int64(data.count)
-                    if dataRequest == nil { break }
-                } while offset < end
-                if !request.isCancelled { request.finishLoading() }
-            } catch {
-                if !request.isCancelled && !Task.isCancelled && !MediaRangeFailurePolicy.isCancellation(error) {
-                    request.finishLoading(with: error)
-                    self.onFailure?(error)
-                }
-            }
-        }
-        return true
-    }
-    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
-        tasks.removeValue(forKey: ObjectIdentifier(loadingRequest))?.cancel()
-    }
-
-}
-
 enum YouTubeStreamResolver {
     static func resolve(_ id: String, session: URLSession = .shared) async throws -> URL {
         try await source(id, session: session).url
@@ -231,7 +44,11 @@ enum YouTubeStreamResolver {
     }
     private static func response(_ id: String, session: URLSession, liveHLS: Bool = false) async throws -> Data {
         guard id.range(of:"^[A-Za-z0-9_-]{11}$",options:.regularExpression) != nil else { throw MacAudioError(message: "Invalid video link.") }
-        var request = URLRequest(url: URL(string: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false")!)
+        // Include the recording/client in the URL as well as the POST body so
+        // caches cannot reuse another recording's player response.
+        let clientName = liveHLS ? "ANDROID" : "IOS"
+        let endpoint = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false&videoId=\(id)&client=\(clientName)"
+        var request = URLRequest(url: URL(string: endpoint)!, cachePolicy: .reloadIgnoringLocalCacheData)
         request.httpMethod = "POST"; request.timeoutInterval = 8
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let version = liveHLS ? "20.10.38" : "21.03.4"
@@ -248,6 +65,12 @@ enum YouTubeStreamResolver {
         let (data, response) = try await session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw MacAudioError(message: "YouTube could not connect. Check your connection and retry.")
+        }
+        let root = try JSONSerialization.jsonObject(with:data) as? [String:Any]
+        if (root?["playabilityStatus"] as? [String:Any])?["status"] as? String == "OK" {
+            guard (root?["videoDetails"] as? [String:Any])?["videoId"] as? String == id else {
+                throw MacAudioError(message:"The music service returned a different recording. Please retry.")
+            }
         }
         return data
     }
@@ -269,10 +92,6 @@ enum YouTubeStreamResolver {
             return YouTubeStreamSource(url: url, isLive: live)
         }
         if !live {
-            let audio = (streams?["adaptiveFormats"] as? [[String:Any]] ?? []).filter { ($0["mimeType"] as? String)?.hasPrefix("audio/mp4") == true }.sorted { ($0["bitrate"] as? Int ?? 0) > ($1["bitrate"] as? Int ?? 0) }
-            for format in audio {
-                if let raw = format["url"] as? String, let url = URL(string:raw), url.scheme == "https", url.host?.hasSuffix(".googlevideo.com") == true { return YouTubeStreamSource(url:url,isLive:false) }
-            }
             let formats = streams?["formats"] as? [[String: Any]] ?? []
             for format in formats {
                 let height = format["height"] as? Int
@@ -316,7 +135,7 @@ final class EmbeddedStreamBridge: NSObject, WKScriptMessageHandler {
     override init() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
-        // The temporary 360p URL resolver must never become the TV's player.
+        // The temporary URL resolver stays silent; AVPlayer owns Mac audio.
         config.allowsAirPlayForMediaPlayback = false
         config.mediaTypesRequiringUserActionForPlayback = []
         config.userContentController.addUserScript(WKUserScript(source: Self.captureScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
@@ -389,12 +208,13 @@ final class EmbeddedStreamBridge: NSObject, WKScriptMessageHandler {
       const preferHLS = PREFER_HLS;
       const started = Date.now();
       let knownLive;
+      let verifiedRecording = false;
       try { window.MediaSource = undefined; window.ManagedMediaSource = undefined; } catch (_) {}
       function capture(raw) {
         try {
           const url = new URL(raw, location.href);
           const mime = url.searchParams.get('mime') || '';
-          if (!url.hostname.endsWith('.googlevideo.com') || seen.has(url.href)) return;
+          if (!verifiedRecording || !url.hostname.endsWith('.googlevideo.com') || seen.has(url.href)) return;
           const progressive = mime.includes('video/mp4') && url.searchParams.get('itag') === '18';
           const hls = url.pathname.includes('hls_playlist') || url.pathname.includes('hls_variant');
           if (preferHLS && (url.pathname.includes('hls_variant') || (progressive && Date.now() - started < 3000))) return;
@@ -406,8 +226,13 @@ final class EmbeddedStreamBridge: NSObject, WKScriptMessageHandler {
       }
       function capturePlayerResponse(response) {
         if (response?.videoDetails?.videoId !== 'VIDEO_ID') return;
+        verifiedRecording = true;
         knownLive = response.videoDetails.isLive === true || response?.microformat?.playerMicroformatRenderer?.liveBroadcastDetails?.isLiveNow === true;
         const master = response?.streamingData?.hlsManifestUrl;
+        if (master && (preferHLS || knownLive)) capture(master);
+        for (const format of response?.streamingData?.formats || []) {
+          if (format.itag === 18 && format.url) capture(format.url);
+        }
         if (master) capture(master);
       }
       const fetch = window.fetch;
@@ -455,7 +280,6 @@ final class NativeMusicAudio {
     var remoteAction: ((String)->Void)?
     private let prepareItem: ((String) async throws -> AVPlayerItem)?
     private var resolver: EmbeddedStreamBridge?
-    private var loader: NativeMediaRangeLoader?
     private var task: Task<Void,Never>?
     private var generation = UUID().uuidString
     private var videoID = ""
@@ -503,7 +327,7 @@ final class NativeMusicAudio {
     }
     func stop() {
         task?.cancel(); task=nil; resolver?.cancel()
-        player.pause();player.replaceCurrentItem(with:nil);loader=nil;itemObservation=nil
+        player.pause();player.replaceCurrentItem(with:nil);itemObservation=nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver);self.endObserver=nil }
         videoID="";loading=false;requestedPlaying=false;generation=UUID().uuidString
         MPNowPlayingInfoCenter.default().nowPlayingInfo=nil
@@ -531,11 +355,10 @@ final class NativeMusicAudio {
                         source=try await resolver!.source(id)
                     }
                     try check(token)
-                    if source.isHLS { item=AVPlayerItem(url:source.url) }
-                    else {
-                        let rangeLoader=NativeMediaRangeLoader(url:source.url);loader=rangeLoader
-                        item=AVPlayerItem(asset:rangeLoader.asset())
-                    }
+                    // Use the native HTTPS transport for the compatible MP4.
+                    // AVFoundation owns byte ranges, buffering and decoding;
+                    // custom ranges can truncate the CDN response on macOS.
+                    item=AVPlayerItem(url:source.url)
                     }
                     try check(token)
                     item.preferredForwardBufferDuration=8

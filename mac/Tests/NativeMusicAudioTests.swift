@@ -1,6 +1,19 @@
 import Foundation
 import AVFoundation
 
+private final class ResolverResponseProtocol: URLProtocol, @unchecked Sendable {
+ static var fixture=Data()
+ override class func canInit(with request:URLRequest)->Bool { true }
+ override class func canonicalRequest(for request:URLRequest)->URLRequest { request }
+ override func startLoading() {
+  let response=HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:"HTTP/1.1",headerFields:["Content-Type":"application/json"])!
+  client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
+  client?.urlProtocol(self,didLoad:Self.fixture)
+  client?.urlProtocolDidFinishLoading(self)
+ }
+ override func stopLoading() {}
+}
+
 @main struct NativeMusicAudioTests {
  @MainActor static func main() async throws {
   let file=FileManager.default.temporaryDirectory.appendingPathComponent("nova-mac-audio-\(UUID().uuidString).wav")
@@ -45,6 +58,15 @@ import AVFoundation
   audio.stop();precondition(audio.player.currentItem==nil)
   let data=Data(#"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"mimeType":"audio/mp4","bitrate":128000,"url":"https://rr1.googlevideo.com/videoplayback?mime=audio%2Fmp4"}],"formats":[{"height":360,"mimeType":"video/mp4","url":"https://rr1.googlevideo.com/video"}]}}"#.utf8)
   let source=try YouTubeStreamResolver.parseSource(data)
-  precondition(source.url.path=="/videoplayback");print("PASS music prefers an audio-only stream")
+  precondition(source.url.path=="/video");print("PASS music chooses the compatible full recording over adaptive audio")
+  let configuration=URLSessionConfiguration.ephemeral;configuration.protocolClasses=[ResolverResponseProtocol.self]
+  let session=URLSession(configuration:configuration);defer{session.invalidateAndCancel()}
+  let root=try JSONSerialization.jsonObject(with:data) as! [String:Any]
+  ResolverResponseProtocol.fixture=try JSONSerialization.data(withJSONObject:root.merging(["videoDetails":["videoId":"otherSongID0"]],uniquingKeysWith:{$1}))
+  do { _=try await YouTubeStreamResolver.source("abcdefghijk",session:session);preconditionFailure("A mismatched recording was accepted") }
+  catch {precondition(error.localizedDescription.contains("different recording"));print("PASS service responses for another recording are rejected")}
+  ResolverResponseProtocol.fixture=try JSONSerialization.data(withJSONObject:root.merging(["videoDetails":["videoId":"abcdefghijk"]],uniquingKeysWith:{$1}))
+  let verified=try await YouTubeStreamResolver.source("abcdefghijk",session:session)
+  precondition(verified.url.path=="/video");print("PASS verified service responses prepare the selected recording")
  }
 }

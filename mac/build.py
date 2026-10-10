@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='nova-music-icon-') as temporary:
             subprocess.run(['sips','-z',str(size*2),str(size*2),str(source),'--out',str(icons/('icon_'+str(size)+'x'+str(size)+'@2x.png'))],check=True,stdout=subprocess.DEVNULL)
     subprocess.run(['iconutil','-c','icns',str(icons),'-o',str(contents/'Resources'/'Music.icns')],check=True)
 with (contents/'Info.plist').open('wb') as f:
-    plistlib.dump({'CFBundleIdentifier':'com.nova.music.mac','CFBundleName':'Nova Music','CFBundleDisplayName':'Nova Music','CFBundleExecutable':'NovaMusic','CFBundleIconFile':'Music.icns','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.0.2','CFBundleVersion':'3','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'Nova Music'},f)
+    plistlib.dump({'CFBundleIdentifier':'com.nova.music.mac','CFBundleName':'Nova Music','CFBundleDisplayName':'Nova Music','CFBundleExecutable':'NovaMusic','CFBundleIconFile':'Music.icns','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.0.3','CFBundleVersion':'4','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'Nova Music'},f)
 subprocess.run(['xattr','-cr',str(app)],check=True)
 subprocess.run(['codesign','--force','--sign','-','--identifier','com.nova.music.mac',str(app)],check=True)
 if args.install:
