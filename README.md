@@ -173,3 +173,7 @@ Playlist photos, icons and cover collages share a portable `collectionArtwork` f
 Validation: 94 web tests and eight native account/sync tests passed, including selected releases with unloaded tracks, separate release kinds, image transfer without native file references, artwork reset, and malformed-image rejection. The live metadata service returned the full Olivia Rodrigo discography. The updated signed phone build was installed on the paired iPhone.
 
 Playback sync preserves the loaded provider track list and completeness of an album when another device supplies a metadata-only release record. Reusing a cached album page also restores its loaded recordings before rendering, so starting playback cannot turn a full album into an empty “Selected recordings” view. A regression reproduced the empty-track overwrite before the fix; all 95 web tests now pass, including saved playlist entries through the same update.
+
+### Playback responsiveness and output confirmation
+
+Mac 1.0.4 updates both local app copies to native HTTPS playback, replacing the older running build that stalled near one minute. Clicked/next recording resolution is cached and overlaps account delivery; connected-device polling and transfers from the current output are faster. Website and phone output pickers show a spinner until the destination confirms readiness, then display the checkmark. Validation: 98 web tests, nine Mac checks, 15 phone account/connection tests, and native network playback beyond 90 seconds. See `mac/README.md` for measured results.

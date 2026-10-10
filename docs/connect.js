@@ -15,7 +15,7 @@ export function validSnapshot(value) {
     Number.isInteger(value.index) && (value.queue.length ? value.index >= 0 && value.index < value.queue.length : value.index === 0) &&
     Number.isFinite(value.position) && value.position >= 0 && typeof value.playing === 'boolean' &&
     typeof value.shuffle === 'boolean' && [0,1,2].includes(value.repeat) &&
-    (value.positionIntent==null || ['preserve','seek'].includes(value.positionIntent)) && (value.at==null || Number.isFinite(value.at)) && (value.handoff==null || typeof value.handoff==='string' && /^[a-f0-9-]{36}$/i.test(value.handoff)) && (value.lyrics==null || validConnectedLyrics(value.lyrics));
+    (value.loading==null || typeof value.loading==='boolean') && (value.positionIntent==null || ['preserve','seek'].includes(value.positionIntent)) && (value.at==null || Number.isFinite(value.at)) && (value.handoff==null || typeof value.handoff==='string' && /^[a-f0-9-]{36}$/i.test(value.handoff)) && (value.lyrics==null || validConnectedLyrics(value.lyrics));
 }
 export function snapshotPosition(snapshot, now = Date.now()) {
   const age=now-(snapshot.at ?? now);
@@ -63,9 +63,14 @@ export class NovaConnect {
     if(this.intent?.command && (this.session?.command!==this.intent.command || status?.owner===this.owner && status.command===this.intent.command && status.playing===this.intent.playing)){
       this.intent=null;clearTimeout(this.intentTimer);
     }
-    this.options.changed?.();
+    this.settleOutput();this.options.changed?.();
   }
-  reset() { clearTimeout(this.intentTimer);this.intent=null;this.generation++; if(this.wasOwner || this.wasRemote || this.owner && this.owner!==this.id)this.options.stop();this.values={};this.preparing=null;this.acknowledgedHandoff=null;this.applied=null;this.wasOwner=false;this.wasRemote=false;this.lastPresence=null;this.lastStatus=null;this.options.changed?.(); }
+  get pendingOutput() { return this.outputIntent?.id || null; }
+  settleOutput() {
+    const intent=this.outputIntent,status=this.values[STATUS_KEY];if(!intent?.command)return;
+    if(this.session?.command!==intent.command || status?.owner===intent.id && status.command===intent.command && !status.handoff && !status.loading && status.playing===intent.playing){this.outputIntent=null;clearTimeout(this.outputTimer);}
+  }
+  reset() { clearTimeout(this.outputTimer);this.outputIntent=null;clearTimeout(this.intentTimer);this.intent=null;this.generation++; if(this.wasOwner || this.wasRemote || this.owner && this.owner!==this.id)this.options.stop();this.values={};this.preparing=null;this.acknowledgedHandoff=null;this.applied=null;this.wasOwner=false;this.wasRemote=false;this.lastPresence=null;this.lastStatus=null;this.options.changed?.(); }
   async receive(values) {
     this.values=Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('connect:')));
     const session=this.session, owner=session?.owner === this.id;
@@ -94,7 +99,8 @@ export class NovaConnect {
     this.account.setConnectValues({[STATUS_KEY]:{...snapshot,handoff:this.acknowledgedHandoff,owner:this.id,command:this.applied,at:Date.now()}});
   }
   async tick() {
-    if(!this.account.user)return;
+    if(!this.account.user || this.ticking)return;
+    this.ticking=true;try{
     if(!this.lastPresence || Date.now()-this.lastPresence>15000) {
       this.lastPresence=Date.now();this.account.setConnectValues({['connect:device.'+this.id]:{id:this.id,name:this.options.name,at:Date.now()}});
     }
@@ -103,6 +109,7 @@ export class NovaConnect {
     // Signing in while a song is already playing must announce that output too.
     const local=this.options.snapshot();
     if(!this.session && this.account.status==='synced' && local?.playing && local.queue?.length && validSnapshot(local))await this.command(local);
+    }finally{this.ticking=false;}
   }
   enqueue(work) {
     const generation=this.generation;
@@ -124,18 +131,27 @@ export class NovaConnect {
     if(!validSnapshot(next))throw Error('Only YouTube Music songs can be played across devices.');
     const session={owner,command:crypto.randomUUID(),at:Date.now(),snapshot:{...next,at:Date.now()}};
     this.account.setConnectValues({[SESSION_KEY]:session});
-    await this.refresh(generation);return session;
+    const local=owner===this.id?this.receive({...this.values,...this.account.connectValues()}):null;
+    try{await this.refresh(generation);if(local)await local;return session;}
+    catch(error){if(owner===this.id && this.session?.command===session.command)this.options.stop();throw error;}
   }
   command(snapshot, output) { return this.enqueue(generation=>this.send(snapshot,output,generation)); }
   transfer(output) {
+    if(output===this.owner&&!this.outputIntent)return Promise.resolve(this.session);
+    const intent={id:output};this.outputIntent=intent;clearTimeout(this.outputTimer);this.options.changed?.();
+    this.outputTimer=setTimeout(()=>{if(this.outputIntent===intent){this.outputIntent=null;this.options.changed?.();this.options.error?.('The selected output did not respond. Choose another speaker.');}},30000);
     return this.enqueue(async generation=>{
       await this.refresh(generation);
-      if(output===this.owner)return;
+      if(output===this.owner)return this.session;
       if(output!==this.id&&!this.devices.some(d=>d.id===output))throw Error('That device is unavailable. Choose an output location.');
       if(!this.session)return this.send(this.options.snapshot(),output,generation);
       const wasPlaying=this.snapshot?.playing ?? this.session.snapshot.playing;
       const checkpoint={...this.snapshot,playing:Boolean(wasPlaying),handoff:null};
       if(!this.online)return this.send(checkpoint,output,generation,this.session.command);
+      if(this.owner===this.id&&this.options.freeze){
+        const expected=this.session.command;await this.options.freeze();
+        return this.send({...this.options.snapshot(),playing:Boolean(wasPlaying),handoff:null},output,generation,expected);
+      }
       const handoff=crypto.randomUUID();
       const frozen=await this.send(s=>({...s,playing:false,handoff}),this.owner,generation);
       const deadline=Date.now()+(this.options.handoffTimeout || 4000);
@@ -148,6 +164,6 @@ export class NovaConnect {
         await new Promise(resolve=>setTimeout(resolve,250));await this.refresh(generation);
       }
       return this.send(checkpoint,output,generation,frozen.command);
-    });
+    }).then(session=>{if(this.outputIntent===intent){intent.command=session.command;intent.playing=session.snapshot.playing;this.settleOutput();this.options.changed?.();}return session;},error=>{if(this.outputIntent===intent){this.outputIntent=null;clearTimeout(this.outputTimer);this.options.changed?.();}throw error;});
   }
 }

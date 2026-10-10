@@ -182,3 +182,27 @@ test('rapid remote transport changes keep the latest intent and rejected sends c
  mac.account.setConnectValues({['connect:device.'+mac.connect.id]:{id:mac.connect.id,name:'Mac',at:Date.now()-100000}});await mac.account.sync();await phone.connect.tick();
  await assert.rejects(phone.connect.setPlayingIntent(true),/unavailable/);assert.equal(phone.connect.pendingPlaying,null);phone.connect.reset();
 });
+
+test('speaker selection stays pending until matching destination telemetry confirms readiness',async t=>{
+ const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);await mac.connect.command(snapshot());await phone.connect.tick();
+ const work=mac.connect.transfer(phone.connect.id);assert.equal(mac.connect.pendingOutput,phone.connect.id);const session=await work;
+ assert.equal(mac.connect.pendingOutput,phone.connect.id);
+ const values=env.remote,ready={...session.snapshot,owner:phone.connect.id,command:session.command,playing:true,loading:false};
+ await mac.connect.receive({...values,[STATUS_KEY]:{...ready,command:crypto.randomUUID()}});assert.equal(mac.connect.pendingOutput,phone.connect.id);
+ await mac.connect.receive({...values,[STATUS_KEY]:{...ready,loading:true}});assert.equal(mac.connect.pendingOutput,phone.connect.id);
+ await mac.connect.receive({...values,[STATUS_KEY]:ready});assert.equal(mac.connect.pendingOutput,null);
+});
+test('failed output selection clears the pending speaker and retains the existing owner',async t=>{
+ const env=setup(t),mac=env.device('Mac');await env.activate(mac);await mac.connect.command(snapshot());
+ const owner=mac.connect.owner;const work=mac.connect.transfer(crypto.randomUUID());assert.ok(mac.connect.pendingOutput);
+ await assert.rejects(work,/unavailable/);assert.equal(mac.connect.pendingOutput,null);assert.equal(mac.connect.owner,owner);
+});
+test('local playback preparation starts before the account write finishes',async t=>{
+ const env=setup(t),mac=env.device('Mac');await env.activate(mac);
+ const original=mac.account.request;let release,blocked=false;
+ mac.account.request=async(path,options)=>{if(path.includes('/rpc/')){blocked=true;await new Promise(resolve=>release=resolve);}return original(path,options)};
+ const work=mac.connect.command({...snapshot(),position:0});
+ for(let i=0;i<100&&!blocked;i++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(blocked,true);assert.equal(mac.local.queue[0].id,'abcdefghijk');assert.equal(mac.local.position,0);assert.equal(mac.applies,1);
+ mac.account.request=original;release();await work;assert.equal(mac.applies,1,'Delivery must not load the same recording twice');
+});

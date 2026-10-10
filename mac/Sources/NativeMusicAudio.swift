@@ -118,6 +118,32 @@ enum YouTubeStreamResolver {
     }
 }
 
+/// Resolve the clicked/next recording while account delivery runs, without
+/// starting audio. Signed URLs expire; keep only a small, short-lived cache.
+@MainActor
+final class MusicStreamCache {
+    private var values: [String:(source:YouTubeStreamSource,at:Date)] = [:]
+    private var pending: [String:Task<YouTubeStreamSource,Error>] = [:]
+    private var warming = Set<String>()
+    private let resolve: (String) async throws -> YouTubeStreamSource
+    init(resolve: @escaping (String) async throws -> YouTubeStreamSource = { try await YouTubeStreamResolver.source($0) }) { self.resolve=resolve }
+    func source(_ id:String) async throws -> YouTubeStreamSource {
+        if let cached=values[id],Date().timeIntervalSince(cached.at)<300 { return cached.source }
+        if let work=pending[id] { return try await work.value }
+        let work=Task { try await resolve(id) };pending[id]=work
+        do {
+            let source=try await work.value;pending[id]=nil;values[id]=(source,Date())
+            if values.count>4,let oldest=values.min(by:{$0.value.at<$1.value.at})?.key { values.removeValue(forKey:oldest) }
+            return source
+        } catch { pending[id]=nil;throw error }
+    }
+    func preload(_ id:String) {
+        guard warming.count<2,pending[id]==nil,!warming.contains(id) else { return }
+        warming.insert(id)
+        Task { defer { warming.remove(id) }; _ = try? await source(id) }
+    }
+}
+
 private let silentResolverScript = #"""
 (() => {
   const play=HTMLMediaElement.prototype.play;
@@ -280,6 +306,7 @@ final class NativeMusicAudio {
     var remoteAction: ((String)->Void)?
     private let prepareItem: ((String) async throws -> AVPlayerItem)?
     private var resolver: EmbeddedStreamBridge?
+    private let streamCache=MusicStreamCache()
     private var task: Task<Void,Never>?
     private var generation = UUID().uuidString
     private var videoID = ""
@@ -335,6 +362,10 @@ final class NativeMusicAudio {
     func handle(_ message:[String:Any]) {
         guard let request=message["request"] as? String, request.count<=80,
               let command=message["command"] as? String else { return }
+        if command=="preload" {
+            if let id=message["videoId"] as? String,id.range(of:"^[A-Za-z0-9_-]{11}$",options:.regularExpression) != nil { streamCache.preload(id) }
+            return
+        }
         if command=="load" {
             guard let id=message["videoId"] as? String,id.range(of:"^[A-Za-z0-9_-]{11}$",options:.regularExpression) != nil,
                   let position=message["position"] as? Double,position.isFinite,position>=0,
@@ -348,7 +379,7 @@ final class NativeMusicAudio {
                     let item:AVPlayerItem
                     if let prepareItem { item=try await prepareItem(id) } else {
                     let source:YouTubeStreamSource
-                    do { source=try await YouTubeStreamResolver.source(id) }
+                    do { source=try await streamCache.source(id) }
                     catch {
                         try Task.checkCancellation()
                         if resolver==nil { resolver=EmbeddedStreamBridge() }
@@ -361,7 +392,7 @@ final class NativeMusicAudio {
                     item=AVPlayerItem(url:source.url)
                     }
                     try check(token)
-                    item.preferredForwardBufferDuration=8
+                    item.preferredForwardBufferDuration=3
                     item.audioTimePitchAlgorithm = .spectral
                     player.replaceCurrentItem(with:item)
                     let deadline=Date().addingTimeInterval(20)

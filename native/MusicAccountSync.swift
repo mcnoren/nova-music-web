@@ -38,6 +38,9 @@ final class MusicAccountSync: ObservableObject {
     @Published private(set) var outputName = "This device"
     @Published private(set) var outputID: String?
     @Published private(set) var outputError: String?
+    @Published private(set) var pendingOutputID: String?
+    private var outputIntent: (id:String,command:String,playing:Bool)?
+    private var outputTimeout: Task<Void,Never>?
     private var connectTask: Task<Void,Never>?, commandTask: Task<Void,Never>?
     private var mirrorClockTask: Task<Void,Never>?
     private var freezeTask: Task<Void,Never>?
@@ -78,7 +81,7 @@ final class MusicAccountSync: ObservableObject {
         actor = store.defaults.string(forKey:"music.sync.device").flatMap(UUID.init(uuidString:)) ?? UUID()
         store.defaults.set(actor.uuidString,forKey:"music.sync.device")
         store.player.connectedCommand = { [weak self] action in self?.routeControl(action) ?? false }
-        Publishers.MergeMany(store.player.$playing.map { _ in () }.eraseToAnyPublisher(),store.player.$currentVideoID.map { _ in () }.eraseToAnyPublisher(),store.player.$trackLyrics.map { _ in () }.eraseToAnyPublisher(),store.player.$lyricCalibration.map { _ in () }.eraseToAnyPublisher())
+        Publishers.MergeMany(store.player.$loading.map { _ in () }.eraseToAnyPublisher(),store.player.$ready.map { _ in () }.eraseToAnyPublisher(),store.player.$playing.map { _ in () }.eraseToAnyPublisher(),store.player.$currentVideoID.map { _ in () }.eraseToAnyPublisher(),store.player.$trackLyrics.map { _ in () }.eraseToAnyPublisher(),store.player.$lyricCalibration.map { _ in () }.eraseToAnyPublisher())
             .sink { [weak self] _ in self?.lastStatus = .distantPast }.store(in:&subscriptions)
         store.objectWillChange.debounce(for:.milliseconds(700),scheduler:RunLoop.main).sink { [weak self] _ in
             Task { @MainActor in self?.changed() }
@@ -101,7 +104,7 @@ final class MusicAccountSync: ObservableObject {
             while !Task.isCancelled {
                 guard self != nil else { return }
                 await self?.connectTick()
-                try? await Task.sleep(for:.seconds(2))
+                try? await Task.sleep(for:.milliseconds(self?.connectedSnapshot?.playing == true || self?.pendingOutputID != nil || self?.playbackIntent != nil || (self?.outputDevices.count ?? 0)>1 ? 750 : 2000))
             }
         }
         poll = Task { [weak self] in
@@ -432,6 +435,7 @@ extension MusicAccountSync {
             let lyrics = player.trackLyrics, timing = player.lyricCalibration
             snapshot.lyrics = MusicConnectedLyrics(songID:id,recordingID:player.resolvedMusicAudioID ?? id,loaded:lyrics != nil,plain:lyrics?.plainText ?? "",lines:lyrics?.lines.map { .init(time:$0.time,text:$0.text,endTime:$0.endTime) } ?? [],instrumental:lyrics?.instrumental ?? false,source:lyrics?.source ?? "Lyrics",sourceURL:lyrics?.sourceURL.absoluteString,offset:timing.offset,rate:timing.rate)
         }
+        snapshot.loading = player.loading || (!player.ready && !queue.isEmpty)
         return snapshot
     }
     private func updatePlaybackIntent() {
@@ -449,6 +453,10 @@ extension MusicAccountSync {
         } else { player.connectedPendingPlaying = nil }
     }
     private func receiveConnection() {
+        if let intent = outputIntent, let status = try? document.values["connect:status"]?.decoded(MusicConnectedSnapshot.self),
+           connectedSession?.command != intent.command || status.owner == intent.id && status.command == intent.command && status.handoff == nil && status.loading != true && status.playing == intent.playing {
+            pendingOutputID = nil; outputIntent = nil; outputTimeout?.cancel()
+        }
         updatePlaybackIntent()
         guard let store else { return }
         outputDevices = document.values.filter { $0.key.hasPrefix("connect:device.") }.compactMap { try? $0.value.decoded(MusicConnectedDevice.self) }.filter { $0.online && UUID(uuidString:$0.id) != nil }.sorted { $0.name < $1.name }
@@ -564,6 +572,7 @@ extension MusicAccountSync {
         } catch { if generation == epoch { outputError = "Could not reach your output devices. Check your connection." } }
     }
     private func resetConnection() {
+        outputTimeout?.cancel(); pendingOutputID = nil; outputIntent = nil
         mirrorClockTask?.cancel(); mirrorClockTask = nil
         intentTimeout?.cancel(); playbackIntent = nil; store?.player.connectedPendingPlaying = nil
         freezeTask?.cancel(); freezeTask = nil; preparingCommand = nil; acknowledgedHandoff = nil
@@ -580,6 +589,7 @@ extension MusicAccountSync {
             guard let self, !Task.isCancelled, self.generation == epoch else { return }
             await self.sync()
             guard !Task.isCancelled, self.generation == epoch else { return }
+            var eagerCommand: String?
             do {
                 guard self.error == nil else { throw NovaSyncFailure.message("Could not reach your devices. Check your connection.") }
                 let owner = output ?? self.connectedSession?.owner ?? self.deviceID
@@ -590,6 +600,11 @@ extension MusicAccountSync {
                     var request = self.connectedSnapshot ?? old.snapshot
                     if !self.outputDevices.contains(where:{ $0.id == old.owner && $0.online }) {
                         request.playing = wasPlaying; request.handoff = nil; frozen = request
+                    } else if old.owner == self.deviceID, let store = self.store {
+                        self.applyingPlayback = true; store.player.pause(); self.applyingPlayback = false
+                        let position = try await store.player.freezeConnectedClock()
+                        guard self.connectedSession?.command == old.command else { throw NovaSyncFailure.message("Playback changed during transfer. Choose the output again.") }
+                        request = self.localSnapshot(); request.position = position; request.playing = wasPlaying; request.handoff = nil; frozen = request
                     } else {
                         let checkpoint = request
                         let handoff = UUID().uuidString.lowercased()
@@ -615,11 +630,18 @@ extension MusicAccountSync {
                 let session = MusicConnectedSession(owner:owner,command:UUID().uuidString.lowercased(),at:Date().timeIntervalSince1970 * 1000,snapshot:next)
                 if let intentID, self.playbackIntent?.id == intentID { self.playbackIntent?.command = session.command }
                 try self.setConnection(["connect:session":.encoded(session)])
+                if transfer, self.pendingOutputID == owner { self.outputIntent = (owner,session.command,next.playing) }
+                // The latest ownership read is complete; prepare our local engine
+                // while the account write is delivered, rather than waiting for it.
+                if owner == self.deviceID { eagerCommand = session.command; self.receiveConnection() }
                 await self.sync()
                 guard self.generation == epoch else { return }
                 if self.error != nil { throw NovaSyncFailure.message("Playback change could not be sent. Check your connection.") }
                 self.outputError = nil
             } catch {
+                self.applyingPlayback = false
+                if let eagerCommand, self.appliedCommand == eagerCommand { self.applyingPlayback = true; self.store?.player.pause(); self.applyingPlayback = false }
+                if transfer, self.pendingOutputID == output { self.pendingOutputID = nil; self.outputIntent = nil; self.outputTimeout?.cancel() }
                 if let intentID, self.playbackIntent?.id == intentID { self.playbackIntent = nil; self.intentTimeout?.cancel(); self.store?.player.connectedPendingPlaying = nil }
                 self.outputError = error.localizedDescription
             }
@@ -627,6 +649,11 @@ extension MusicAccountSync {
     }
     func selectOutput(_ id: String) {
         guard id != connectedSession?.owner else { return }
+        pendingOutputID = id; outputIntent = nil; outputError = nil; outputTimeout?.cancel()
+        outputTimeout = Task { [weak self] in
+            try? await Task.sleep(for:.seconds(30)); guard !Task.isCancelled, self?.pendingOutputID == id else { return }
+            self?.pendingOutputID = nil; self?.outputIntent = nil; self?.outputError = "The selected output did not respond. Choose another speaker."
+        }
         sendPlayback(output:id,transfer:true) { $0 }
     }
     func routePlay(_ song: YouTubeVideo, queue: [YouTubeVideo], shuffle: Bool?) -> Bool {
@@ -715,12 +742,12 @@ struct MusicOutputButton: View {
                     Section("Playing on") {
                         if account.user == nil { Text("Sign in to the same Nova Music account on both devices to connect playback.") }
                         Button { account.selectOutput(account.deviceID) } label: {
-                            HStack { Label("This device",systemImage:"iphone"); Spacer(); if account.outputID == account.deviceID || account.outputID == nil { Image(systemName:"checkmark").accessibilityLabel("Selected") } }
-                        }.disabled(account.user == nil)
+                            HStack { Label("This device",systemImage:"iphone"); Spacer(); if account.pendingOutputID == account.deviceID { ProgressView().accessibilityLabel("Connecting speaker") } else if account.outputID == account.deviceID || account.outputID == nil { Image(systemName:"checkmark").accessibilityLabel("Selected") } }
+                        }.disabled(account.user == nil || account.pendingOutputID != nil)
                         ForEach(account.outputDevices.filter { $0.id != account.deviceID }) { device in
                             Button { account.selectOutput(device.id) } label: {
-                                HStack { Label(device.name,systemImage:"desktopcomputer"); Spacer(); if account.outputID == device.id { Image(systemName:"checkmark").accessibilityLabel("Selected") } }
-                            }
+                                HStack { Label(device.name,systemImage:"desktopcomputer"); Spacer(); if account.pendingOutputID == device.id { ProgressView().accessibilityLabel("Connecting speaker") } else if account.outputID == device.id { Image(systemName:"checkmark").accessibilityLabel("Selected") } }
+                            }.disabled(account.pendingOutputID != nil)
                         }
                         if let id = account.outputID, id != account.deviceID, !account.outputDevices.contains(where:{ $0.id == id }) {
                             HStack { Text("\(account.outputName) · unavailable"); Spacer(); Image(systemName:"checkmark").accessibilityLabel("Selected") }.foregroundStyle(.secondary)

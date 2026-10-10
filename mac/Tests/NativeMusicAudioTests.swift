@@ -16,6 +16,12 @@ private final class ResolverResponseProtocol: URLProtocol, @unchecked Sendable {
 
 @main struct NativeMusicAudioTests {
  @MainActor static func main() async throws {
+  var resolutions=0
+  let cache=MusicStreamCache(resolve:{ _ in resolutions += 1;try await Task.sleep(for:.milliseconds(50));return YouTubeStreamSource(url:URL(string:"https://example.com/song.mp4")!) })
+  cache.preload("abcdefghijk")
+  try await Task.sleep(for:.milliseconds(10))
+  _=try await cache.source("abcdefghijk");_=try await cache.source("abcdefghijk")
+  precondition(resolutions==1);print("PASS preload, click and replay share one verified stream lookup")
   let file=FileManager.default.temporaryDirectory.appendingPathComponent("nova-mac-audio-\(UUID().uuidString).wav")
   var wav=Data()
   func text(_ s:String){wav.append(contentsOf:s.utf8)}

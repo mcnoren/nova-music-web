@@ -10,7 +10,7 @@ import {MusicSearchClient, rankLocal, mergeResults, normalizeSearch, rankSearch,
 import {syncConfig} from './sync-config.js?v=ebe8169ae84b';
 import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=b98686ee6edd';
 import {libraryValues, applyLibraryValues} from './sync-model.js?v=013a31f554e0';
-import {NovaConnect, snapshotPosition} from './connect.js?v=5fe39a74171c';
+import {NovaConnect, snapshotPosition} from './connect.js?v=5ea1029e6d19';
 let accountClient = null, connect = null, applyingConnectedPlayback = false, mirroredPlayback = null;
 const authReturn=parseAuthReturn(location.hash);
 if(authReturn)history.replaceState(null,'',location.pathname+location.search);
@@ -388,6 +388,7 @@ async function ensureYouTube(){
  });return ytPromise;
 }
 async function playSongs(list,index=0){
+ const selected=list[Math.max(0,index)];if(selected?.source==='youtube'&&window.novaDesktop?.nativeAudio&&!connect?.remote)preloadMacSong(selected.id);
  if(!list.length){toast('No playable songs in this collection.');return;}
  if(accountClient?.user && !applyingConnectedPlayback){
   if(list.every(song=>song.source==='youtube')){await connect.command({queue:list,index:Math.max(0,Math.min(index,list.length-1)),position:0,playing:true,shuffle,repeat});return;}
@@ -397,6 +398,7 @@ async function playSongs(list,index=0){
  }
  queue=list.map(s=>s.id);queueIndex=Math.max(0,Math.min(index,queue.length-1));await playCurrent();
 }
+function preloadMacSong(id){if(/^[A-Za-z0-9_-]{11}$/.test(id||''))window.novaDesktop?.post({type:'audio',command:'preload',videoId:id,request:crypto.randomUUID()});}
 const audioVersions=new Map();
 async function playCurrent(startAt=0,shouldPlay=true){
  if(connect?.remote && !applyingConnectedPlayback){await connect.command({...connectedPlaybackSnapshot(),position:0,playing:true});return;}
@@ -420,6 +422,7 @@ async function playCurrent(startAt=0,shouldPlay=true){
    if(s.source==='local'){const file=await fileStore('get',s.id);if(token!==playToken)return;if(!file)throw Error('This audio file is missing on this device. Import it again.');objectURL=URL.createObjectURL(file);audio.src=objectURL}else audio.src=s.previewUrl||s.url;
    audio.volume=state.settings.volume/100;await audio.play();if(token!==playToken){audio.pause();return}setPlaying(true);
  }
+ if(window.novaDesktop?.nativeAudio)preloadMacSong(queue[queueIndex+1]);
  updateMediaSession();loadLyrics(s);renderPanel();$$('[data-song-row]').forEach(row=>row.classList.toggle('playing',row.dataset.songRow===s.id));
 }
 function setPlaying(value){const changed=playing!==value;playing=value;reportDesktopPlayback();if(changed)connect?.publishStatus();updateTransportButtons();if(!(window.novaDesktop?.nativeAudio&&current?.source==='youtube')&&navigator.mediaSession)navigator.mediaSession.playbackState=value?'playing':'paused'}
@@ -533,7 +536,7 @@ document.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT'].include
 async function action(name,data){
   if(name==='dismiss-keyboard'){$('#search-input').blur();return;}
   if(name==='output-location'){outputLocation();return;}
-  if(name==='select-output'){await connect.transfer(data.id);outputLocation();return;}
+  if(name==='select-output'){await connect.transfer(data.id);renderOutputDevices();return;}
   if(connect?.remote && !applyingConnectedPlayback && ['previous','shuffle','repeat','enqueue','enqueue-next','queue-play','queue-remove','queue-move','album-queue'].includes(name)){await remotePlaybackAction(name,data);return;}
   const id=data.id;
   if(name==='reload')location.reload();if(name==='search'){location.hash='search';$('#search-input').focus()}if(name==='discover')location.hash='search';if(name==='library')location.hash='library';if(name==='back')history.back();if(name==='close-modal')$('#modal').close();if(name==='settings')settings();if(name==='playback-health')showPlaybackHealth();
@@ -701,7 +704,7 @@ function account(reauth=false){
 }
 async function initializeAccountSync(){try{accountClient=new NovaSyncClient(syncConfig,{values:()=>libraryValues(state,catalog),activate:(user,cached)=>{connect?.reset();collectionPages.clear();publicPlaylists.clear();const deviceSettings={...state.settings};state=cached?{...structuredClone(defaults),...cached}:structuredClone(defaults);state.settings=deviceSettings;},apply:values=>{const next=applyLibraryValues(state,values);state=next;songs=new Map([...catalog.songs,...Object.values(state.extraSongs)].map(s=>[s.id,s]));albums=new Map([...catalog.albums,...Object.values(state.extraAlbums)].map(a=>[a.id,a]));artists=new Map([...catalog.artists,...Object.values(state.extraArtists)].map(a=>[a.id,a]));persist();render();renderPanel();},deactivate:()=>{connect?.reset();collectionPages.clear();publicPlaylists.clear();const deviceSettings={...state.settings};try{state={...structuredClone(defaults),...JSON.parse(localStorage.getItem(KEY)||'{}')}}catch{state=structuredClone(defaults)}state.settings=deviceSettings;songs=new Map([...catalog.songs,...Object.values(state.extraSongs)].map(s=>[s.id,s]));albums=new Map([...catalog.albums,...Object.values(state.extraAlbums)].map(a=>[a.id,a]));artists=new Map([...catalog.artists,...Object.values(state.extraArtists)].map(a=>[a.id,a]));persist();render();},status:updateAccountStatus,connect:values=>{connect?.receive(values)},});
 connect=new NovaConnect(accountClient,{id:browserOutputID(),name:browserOutputName(),snapshot:connectedPlaybackSnapshot,apply:applyConnectedPlayback,freeze:freezeConnectedPlayback,stop:stopConnectedPlayback,mirror:mirrorConnectedPlayback,changed:updateOutputButton,error:message=>toast(message)});
-setInterval(()=>connect.tick().catch(()=>{}),2000);
+setInterval(()=>{if(connect?.snapshot?.playing||connect?.pendingPlaying!=null||connect?.pendingOutput||connect?.devices.length>1||!connect?.lastPoll||Date.now()-connect.lastPoll>=2000){connect.lastPoll=Date.now();connect.tick().catch(()=>{});}},750);
 await accountClient.initialize();await connect.tick();updateAccountStatus(accountClient);if(authReturn){if(authReturn.type==='recovery'){try{accountEmail=await accountClient.beginPasswordRecovery(authReturn.token);accountMode='recovery';account()}catch(error){modal('Password reset',`<p class="notice">${esc(error.message)}</p>${btn('Request a new link','account-mode','data-value="forgot"')}`)}}else{accountMode='signin';account();$('#account-form-message').textContent=authReturn.type==='error'?authReturn.message:'Email confirmed. Sign in with your email and password.'}}}catch{toast('Account sync could not initialize. Your device library is still available.')}}
 const actionBeforeAccount=action;
 action=async function(name,data){if(name==='account'){account();return}if(name==='account-reauth'){accountMode='signin';accountEmail=accountClient.user.email;account(true);return}if(name==='account-mode'){accountMode=['signin','signup','forgot'].includes(data.value)?data.value:'signin';accountClient.recovery=null;account(Boolean(accountClient.user));return}if(name==='account-sync'){await accountClient.sync();return}if(name==='account-sign-out'){await accountClient.signOut();accountMode='signin';accountEmail='';$('#modal').close();toast('Signed out. Your cloud library remains saved.');return}return actionBeforeAccount(name,data)};
@@ -739,7 +742,7 @@ function connectedPlaybackSnapshot(){
  const sample=samplePlayback(),list=queue.map(id=>songs.get(id)).filter(Boolean).map(s=>({...s}));
  if(list[queueIndex] && sample.duration>0)list[queueIndex].duration=sample.duration;
  const lyrics=current?.source==='youtube'?{songID:current.id,recordingID:current.id,loaded:Boolean(lyricData),plain:lyricData?.plain||'',lines:lyricData?.lines||[],instrumental:Boolean(lyricData?.instrumental),source:lyricData?.source||'Lyrics',sourceURL:lyricData?.sourceURL,offset:lyricOffset(),rate:lyricRate()}:undefined;
- return {queue:list,index:Math.max(0,queueIndex),position:Math.max(0,position()),playing,shuffle,repeat,at:Date.now(),lyrics};
+ return {queue:list,index:Math.max(0,queueIndex),position:Math.max(0,position()),playing,shuffle,repeat,loading:current?.source==='youtube'?yt?.getPlayerState?.()===3:false,at:Date.now(),lyrics};
 }
 function stopConnectedPlayback(){++playToken;++youtubeGeneration;cancelYouTube?.();cancelYouTube=null;audio.pause();audio.removeAttribute('src');audio.load();if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null}yt?.destroy?.();yt=null;ytPromise=null;$('#youtube-host').innerHTML='<div id="youtube-player"></div>';$('#youtube-host').classList.add('hidden');lyricAbort?.abort();++lyricToken;lyricData=null;mirroredPlayback=null;queue=[];queueIndex=-1;current=null;setPlaying(false);$('#current-song').innerHTML='Choose a song';renderPanel();}
 async function freezeConnectedPlayback(){
@@ -788,7 +791,13 @@ function updateTransportButtons(){const pending=connect?.pendingPlaying;const in
 function reportDesktopPlayback(){window.novaDesktop?.post({type:'playback',playing:Boolean(playing&&!connect?.remote)});}
 function updateOutputButton(){reportDesktopPlayback();updateTransportButtons();for(const button of $$('[data-action="output-location"]')){button.classList.toggle('active',Boolean(connect?.remote));button.setAttribute('aria-label','Output location: '+(connect?.remote?connect.name:window.novaDesktop?'This Mac':'This browser'));button.title=connect?.remote?'Playing on '+connect.name:'Output location';}if($('#output-device-list'))renderOutputDevices();}
 function outputLocation(){modal('Output location','<div id="output-device-list"></div>');renderOutputDevices();connect?.tick().catch(()=>{});}
-function renderOutputDevices(){const target=$('#output-device-list');if(!target)return;const model=JSON.stringify([Boolean(accountClient?.user),connect?.owner,connect?.online,connect?.devices]);if(target.dataset.model===model)return;target.dataset.model=model;target.innerHTML=accountClient?.user?`<p class="small-copy">Playing on ${esc(connect.owner===connect.id||!connect.owner?'this browser':connect.name)}${connect.remote&&!connect.online?' · unavailable':''}</p><div class="menu-list">${btn((window.novaDesktop?'This Mac':'This browser')+(connect.owner===connect.id||!connect.owner?' <span aria-label="Selected">✓</span>':''),'select-output',`data-id="${esc(connect.id)}"`)}${connect.remote&&!connect.online?'<p class="small-copy">'+esc(connect.name)+' · unavailable ✓</p>':''}${connect.devices.filter(d=>d.id!==connect.id).map(d=>btn(esc(d.name)+(d.id===connect.owner?' <span aria-label="Selected">✓</span>':''),'select-output',`data-id="${esc(d.id)}"`)).join('')}</div><p class="small-copy">Open Nova Music on another device signed into this account. Keep the browser open for playback. If audio is blocked, press Play in the output browser once.</p>`:`<p>Sign in to the same Nova Music account on both devices to connect playback.</p>${btn('Sign in','account')}`;}
+function renderOutputDevices(){
+ const target=$('#output-device-list');if(!target)return;
+ const pending=connect?.pendingOutput,model=JSON.stringify([Boolean(accountClient?.user),connect?.owner,connect?.online,connect?.devices,pending]);if(target.dataset.model===model)return;target.dataset.model=model;
+ const marker=id=>id===pending?'<span class="output-spinner" role="status" aria-label="Connecting speaker"></span>':id===(connect.owner||connect.id)?'<span aria-label="Selected">✓</span>':'';
+ const deviceButton=(id,name)=>btn(esc(name)+marker(id),'select-output',`data-id="${esc(id)}" aria-busy="${id===pending}" ${pending?'disabled':''}`);
+ target.innerHTML=accountClient?.user?`<p class="small-copy">Playing on ${esc(connect.owner===connect.id||!connect.owner?(window.novaDesktop?'this Mac':'this browser'):connect.name)}${connect.remote&&!connect.online?' · unavailable':''}</p><div class="menu-list">${deviceButton(connect.id,window.novaDesktop?'This Mac':'This browser')}${connect.remote&&!connect.online?'<p class="small-copy">'+esc(connect.name)+' · unavailable ✓</p>':''}${connect.devices.filter(d=>d.id!==connect.id).map(d=>deviceButton(d.id,d.name)).join('')}</div><p class="small-copy">Open Nova Music on another device signed into this account. Keep the browser open for playback. If audio is blocked, press Play in the output browser once.</p>`:`<p>Sign in to the same Nova Music account on both devices to connect playback.</p>${btn('Sign in','account')}`;
+}
 async function remotePlaybackAction(name,data){
  await connect.command(current=>{
   const next=structuredClone(current);next.position=snapshotPosition(current);next.positionIntent=['next','previous','queue-play'].includes(name)?'seek':'preserve';

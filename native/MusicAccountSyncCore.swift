@@ -164,6 +164,7 @@ struct MusicConnectedSnapshot: Codable, Equatable {
     var owner: String? = nil, command: String? = nil
     var lyrics: MusicConnectedLyrics? = nil
     var handoff: String? = nil
+    var loading: Bool? = nil
     var positionIntent: String? = nil
     var valid: Bool {
         queue.count <= 1000 && queue.allSatisfy { YouTubeLink.validID($0.id) && $0.source == "youtube" } &&
