@@ -114,3 +114,26 @@ export async function matchPlaylist(tracks,{search,localSongs=[],onProgress=()=>
  }
  await Promise.all(Array.from({length:Math.min(Math.max(1,concurrency),3,tracks.length)},worker));check();return entries;
 }
+
+// Keep every source entry identifiable, including repeated Spotify recordings.
+export const unmatchedKey=(entry,index)=>entry.id||`${entry.position??index}:${entry.uri||''}:${index}`;
+export function playlistReviewEntries(playlists,{paired=false}={}){
+ return playlists.flatMap(playlist=>(playlist.unmatched||[]).map((entry,index)=>({playlist,entry,index,key:unmatchedKey(entry,index)})))
+  .filter(({entry})=>Boolean(entry.matchedSongId)===paired);
+}
+export function pairPlaylistEntry(playlist,key,song){
+ if(!playlist||playlist.rules||!song?.id)return false;
+ const index=(playlist.unmatched||[]).findIndex((entry,i)=>unmatchedKey(entry,i)===key);
+ if(index<0||playlist.unmatched[index].matchedSongId)return false;
+ const entry=playlist.unmatched[index];
+ const following=(playlist.importEntries||[]).filter(source=>source.position>entry.position).sort((a,b)=>a.position-b.position)
+  .map(source=>source.matchedSongId).find(id=>id&&playlist.songs.includes(id));
+ if(!playlist.songs.includes(song.id)){
+  const insertion=following?playlist.songs.indexOf(following):playlist.songs.length;
+  playlist.songs.splice(insertion,0,song.id);
+ }
+ const source=playlist.importEntries?.find(source=>source.position===entry.position);
+ if(source)source.matchedSongId=song.id;
+ entry.matchedSongId=song.id;entry.checked=true;
+ return true;
+}

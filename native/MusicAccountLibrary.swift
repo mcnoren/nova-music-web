@@ -45,6 +45,33 @@ enum MusicAccountLibrary {
             value["artwork"] = .string(playlist.sourceArtwork?.absoluteString ?? ""); value["native"] = try .encoded(playlist)
             if let source = playlist.spotifySourceURL { value["sourceUrl"] = .string(source.absoluteString) }
             else if let source = playlist.youtubePlaylistID { value["sourceUrl"] = .string("https://www.youtube.com/playlist?list=\(source)") }
+            if let unmatched = playlist.spotifyUnmatchedTracks {
+                let previousUnmatched = Dictionary((value["unmatched"]?.array ?? []).compactMap { item in
+                    item["position"]?.safeInt.map { ($0,item.object ?? [:]) }
+                },uniquingKeysWith:{ _,last in last })
+                value["unmatched"] = .array(unmatched.map { entry in
+                    var item = previousUnmatched[entry.position - 1] ?? [:]
+                    let fields: [String:NovaSyncValue] = ["id":.string(entry.id.uuidString.lowercased()), "position":.number(Double(entry.position - 1)),
+                        "title":.string(entry.track.title), "artist":.string(entry.track.artist), "album":.string(entry.track.album ?? ""),
+                        "uri":.string(entry.track.uri), "duration":entry.track.duration.map(NovaSyncValue.number) ?? .null,
+                        "explicit":entry.track.isExplicit.map(NovaSyncValue.bool) ?? .null, "checked":.bool(entry.isChecked),
+                        "status":.string(entry.reason.rawValue), "reason":.string(entry.failureDetail ?? SpotifyPlaylistImporter.Match(id:0,track:entry.track,song:nil,status:entry.reason).explanation)]
+                    item.merge(fields) { _,new in new }
+                    if let isrc = entry.track.isrc { item["isrc"] = .string(isrc) }
+                    item["matchedSongId"] = entry.matchedSongID.map(NovaSyncValue.string) ?? .null
+                    return .object(item)
+                })
+            }
+            if let importedIDs = playlist.spotifyImportSongIDs {
+                let previous = Dictionary((value["importEntries"]?.array ?? []).compactMap { item in
+                    item["position"]?.safeInt.map { ($0,item.object ?? [:]) }
+                },uniquingKeysWith:{ _,last in last })
+                value["importEntries"] = .array(importedIDs.enumerated().map { position,songID in
+                    var item = previous[position] ?? [:]
+                    item["position"] = .number(Double(position)); item["matchedSongId"] = songID.map(NovaSyncValue.string) ?? .null
+                    return .object(item)
+                })
+            }
             if let rules = playlist.smartRules {
                 value["rules"] = .object(["source":.string(rules.source == .liked ? "liked" : "saved"), "artist":.string(rules.artists.joined(separator: ", ")), "artists":.array(rules.artists.map(NovaSyncValue.string)), "title":.string(rules.titleContains), "album":.string(rules.albumContains), "sort":.string(rules.sort == .newest ? "newest" : rules.sort == .title ? "title" : "artist"), "limit":rules.limit.map { .number(Double($0)) } ?? .null])
             } else { value.removeValue(forKey:"rules") }
@@ -70,6 +97,7 @@ enum MusicAccountLibrary {
         }
         if store.musicProfile != MusicAccountProfile() { result["profile:main"] = try .encoded(store.musicProfile.validated()) }
         result["preference:genres"] = .array(store.discoverGenres.map(NovaSyncValue.string))
+        result.merge(old.filter { $0.key.hasPrefix("connect:") },uniquingKeysWith:{ _,new in new })
         return result
     }
 
@@ -110,6 +138,32 @@ enum MusicAccountLibrary {
             guard created >= 0, created < 8_640_000_000_000_000 else { throw NovaSyncFailure.invalidDocument }
             playlist.createdAt = Date(timeIntervalSince1970:created / 1000)
             playlist.sourceArtwork = imageURL(value["artwork"]?.string)
+            if let unmatched = value["unmatched"]?.array {
+                playlist.spotifyUnmatchedTracks = try unmatched.enumerated().map { index,item in
+                    guard let title = item["title"]?.string, let artist = item["artist"]?.string else { throw NovaSyncFailure.invalidDocument }
+                    let position = item["position"]?.safeInt ?? index
+                    guard position >= 0 else { throw NovaSyncFailure.invalidDocument }
+                    let uri = item["uri"]?.string ?? "", reason = item["reason"]?.string ?? ""
+                    let track = SpotifyPlaylistTrack(uri:uri,title:title,artist:artist,duration:item["duration"]?.number,
+                        isExplicit:item["explicit"].flatMap { if case .bool(let flag) = $0 { return flag }; return nil },album:item["album"]?.string,
+                        isLocal:uri.hasPrefix("spotify:local:"))
+                    let status = item["status"]?.string.flatMap(SpotifyPlaylistImporter.Match.Status.init(rawValue:)) ??
+                        (reason.localizedCaseInsensitiveContains("fail") ? .searchFailed : reason.localizedCaseInsensitiveContains("local") || reason.localizedCaseInsensitiveContains("podcast") || reason.localizedCaseInsensitiveContains("unavailable") ? .unsupported : .notFound)
+                    var entry = SpotifyUnmatchedTrack(position:position + 1,track:track,reason:status)
+                    entry.id = item["id"]?.string.flatMap(UUID.init(uuidString:)) ?? playlist.spotifyUnmatchedTracks?.first(where: { $0.position == position + 1 && $0.track.uri == uri })?.id ?? entry.id
+                    entry.isChecked = item["checked"] == .bool(true); entry.matchedSongID = item["matchedSongId"]?.string
+                    entry.failureDetail = reason.isEmpty ? nil : reason
+                    return entry
+                }
+            }
+            if let imported = value["importEntries"]?.array, !imported.isEmpty {
+                let positions = imported.compactMap { $0["position"]?.safeInt }
+                guard positions.count == imported.count, positions.allSatisfy({ $0 >= 0 && $0 < imported.count }) else { throw NovaSyncFailure.invalidDocument }
+                var ids = [String?](repeating:nil,count:(positions.max() ?? 0) + 1)
+                for entry in imported { if let position = entry["position"]?.safeInt { ids[position] = entry["matchedSongId"]?.string } }
+                playlist.spotifyImportSongIDs = ids
+            }
+            if let source = value["sourceUrl"]?.string, let url = URL(string:source), SpotifyPlaylistLink.accepts(url) { playlist.spotifySourceURL = url }
             if let rules = value["rules"]?.object {
                 var smart = SmartPlaylistRules(); smart.source = rules["source"]?.string == "liked" ? .liked : .library
                 smart.artists = rules["artists"]?.array?.compactMap(\.string) ?? (rules["artist"]?.string ?? "").split(separator:",").map { $0.trimmingCharacters(in:.whitespaces) }.filter { !$0.isEmpty }

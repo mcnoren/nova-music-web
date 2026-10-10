@@ -41,3 +41,20 @@ test('rate limiting waits and retries while cancellation interrupts a pending de
  let calls=0,waits=0;const entries=await matchPlaylist([source],{requestInterval:0,onWait:()=>waits++,search:async()=>{if(++calls===1){const error=Error('Busy');error.status=429;error.retryAfterMs=5;throw error}return[song]}});assert.equal(calls,2);assert.equal(waits,1);assert.equal(entries[0].song.id,'official');
  const controller=new AbortController();const pending=matchPlaylist([source],{signal:controller.signal,search:async()=>{const error=Error('Busy');error.status=429;error.retryAfterMs=60000;setTimeout(()=>controller.abort(),5);throw error}});await assert.rejects(pending,{name:'AbortError'});
 });
+
+test('one review list includes unpaired entries from every playlist, including legacy checked songs',async()=>{
+ const {playlistReviewEntries}=await import('../docs/playlist-import.js');
+ const playlists=[{id:'a',unmatched:[{title:'Missing',position:0,checked:true},{title:'Paired',matchedSongId:'official'}]},{id:'b',unmatched:[{title:'Missing',position:0}]}];
+ const entries=playlistReviewEntries(playlists);assert.equal(entries.length,2);assert.deepEqual(entries.map(e=>e.playlist.id),['a','b']);assert.equal(playlistReviewEntries(playlists,{paired:true}).length,1);
+});
+test('manual pairing restores source order, retains failures, and persists duplicate entries independently',async()=>{
+ const {pairPlaylistEntry,unmatchedKey,playlistReviewEntries}=await import('../docs/playlist-import.js');
+ const p={id:'a',songs:['first','last'],unmatched:[{id:'one',title:'Middle',artist:'Artist',position:1,reason:'Search failed'},{id:'two',title:'Middle',artist:'Artist',position:2,reason:'No close match'}],importEntries:[{position:0,matchedSongId:'first'},{position:1,matchedSongId:null},{position:2,matchedSongId:null},{position:3,matchedSongId:'last'}]};
+ assert.ok(pairPlaylistEntry(p,unmatchedKey(p.unmatched[0],0),{id:'middle'}));assert.deepEqual(p.songs,['first','middle','last']);assert.equal(p.unmatched[0].reason,'Search failed');assert.equal(p.importEntries[1].matchedSongId,'middle');assert.equal(playlistReviewEntries([p]).length,1);
+ const restored=JSON.parse(JSON.stringify(p));assert.ok(pairPlaylistEntry(restored,'two',{id:'middle'}));assert.deepEqual(restored.songs,p.songs);assert.equal(playlistReviewEntries([restored]).length,0);
+ assert.equal(pairPlaylistEntry(restored,'two',{id:'other'}),false);assert.equal(pairPlaylistEntry(restored,'removed',{id:'other'}),false);assert.equal(pairPlaylistEntry({...p,rules:{}},'one',{id:'other'}),false);
+});
+test('legacy imports without source mappings can pair and missing destinations cannot be edited',async()=>{
+ const {pairPlaylistEntry,unmatchedKey}=await import('../docs/playlist-import.js');
+ const p={songs:[],unmatched:[{title:'Legacy',checked:true}]};assert.ok(pairPlaylistEntry(p,unmatchedKey(p.unmatched[0],0),{id:'found'}));assert.deepEqual(p.songs,['found']);assert.equal(pairPlaylistEntry(null,'key',{id:'found'}),false);
+});

@@ -1,6 +1,6 @@
 # Nova Music for the web
 
-A browser adaptation of Nova Music’s Discover, Classical, and Library experience.
+A browser adaptation of Nova Music’s Home, Classical, and Search experience. Home is the default page. Search combines full catalog search with browse tiles and the former Discover page’s recommendations, mixes, genres and fresh finds. The logo and Home button return to Home; existing Discover links open Search.
 
 **Website:** https://mcnoren.github.io/nova-music-web/
 
@@ -17,7 +17,7 @@ A browser adaptation of Nova Music’s Discover, Classical, and Library experien
 - A continuous player with play/pause, seeking, volume, queue editing, shuffle and repeat.
 - Exact-recording LRCLIB lyric lookup, synced LRC lyrics when duration agrees, custom lyrics and timing offset.
 - Artwork/lyrics display, song information, Wikipedia introductions with attribution, song sharing.
-- Spotify PKCE connection, complete paginated playlist import, snapshot/total checks, Exportify CSV import, live per-song recording searches, match review and persistent unmatched-song checklists.
+- Spotify PKCE connection, complete paginated playlist import, snapshot/total checks, Exportify CSV import, live per-song recording searches, and a shared Songs to review list across every imported playlist. Tap an unpaired entry to search the full music catalog and assign a recording to its original playlist; failure reasons and paired history persist and sync with the native app. Playlist Add songs uses the same live search popup, with pagination and retry. Import review groups suggestions and failures together before matched songs.
 - Pasted song-list import and complete playback of imported audio files saved in IndexedDB.
 - Library backup/restore, phone navigation, keyboard controls, installation manifest and offline app shell.
 - Progressive WebMCP tools for catalog search, library readback and playlist creation when the browser supports them.
@@ -137,3 +137,22 @@ Choose **Add music → Import playlist CSV** on the website, or **Playlists → 
 The website previously searched only metadata already loaded in the browser unless an optional API key was configured. It now searches every supported entry with bounded concurrency, preserving original order and sharing repeated queries. CSV duration, explicitness and album metadata help rank recordings; ISRCs are preserved without claiming an ISRC match when the provider exposes none. Different editions and non-official sources require manual selection. Failed searches are distinguished from absent matches and can be retried. Cancelling aborts outstanding searches and prevents a stale review from opening. Nothing is added until the review is saved. Repeated recordings are saved once; all original entries and unmatched metadata are retained.
 
 CSV import uses the same existing provider interface as normal Nova search; it does not change or remove the provider-policy limitations documented above. The native app already performed live per-song searches; this update adds CSV selection and parsing to that flow.
+
+## Connected playback
+
+Sign into the same Nova Music account in the app and browser. **Output location** in the player selects the device that produces audio. Selecting a recording on another signed-in device keeps the current output and replaces its song/queue. Pause, skip, seek, shuffle/repeat and queue additions, removals and reordering control that output. Switching output carries the recording, ordered queue, position and pause state; the previous output stops when it receives the change.
+
+Playback uses `connect:session`, `connect:status` and per-device presence records in the existing private account document and existing authenticated revision-checked RPC; no database migration or additional service is required. Commands and playback telemetry use separate records, so an older heartbeat cannot overwrite a song selection. Only matching command telemetry is used. Devices check for updates about every two seconds, send playback telemetry about every six seconds, and expire from the device list after 90 seconds without a heartbeat. Unchanged polls fetch only the library revision; playback-only updates do not reapply/redraw the library. Signed-out users retain ordinary local playback. Imported local audio cannot transfer between devices.
+
+Keep the output browser open or the native app available. iOS can suspend an inactive app that is not playing audio; this implementation cannot wake a suspended app or closed browser. A browser that blocks autoplay needs one local Play gesture. Output changes depend on network delivery and are not simultaneous speaker playback. Validation uses a shared simulated authenticated backend, two browser sessions and native audio fixtures; physical-device/network testing remains necessary before release. Both clients must run this version to share playback; older clients sync only their libraries.
+
+The Search discovery content no longer includes the personalized For You section. Search provides a **Dismiss keyboard** button without leaving the page or clearing the query.
+
+
+## Phone playback in the web player
+
+The controller mirrors the output's current song, full queue, actual duration, playback timestamp and pause/buffering state. Its display advances from the shared timestamp between network updates. Native playback publishes the resolved audio recording ID, the exact lyric cues/provider and the offset/rate calibration; the browser uses those cues and clock instead of independently choosing different lyric timing. Older snapshots without shared lyrics retain provider lookup. Signing in with an already-playing song announces the existing output when there is no shared session.
+
+Entering remote mode destroys any existing embedded player and unloads local audio, including guest audio that started before sign-in. Metadata and lyrics still display, and output transfer creates a player only on the selected output. This prevents local browser playback or embedded ads while controlling the phone. When the browser is the selected output, YouTube's embedded player can serve ads; its API has no switch to guarantee ad-free playback. Nova does not add advertising of its own.
+
+Validation: 66 web tests and seven native connection/account tests pass. The signed iPhone build succeeds. A local browser fixture displays the phone's song at 1:05 / 3:00, the matching highlighted lyric and no embedded iframe. Tests cover existing playback on sign-in, joining a remote output with preexisting local audio, pause/seek/queue transfer, exact lyric timing, old telemetry, account isolation and malformed snapshots. These checks do not establish frame-accurate timing on every physical device or network.

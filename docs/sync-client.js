@@ -9,7 +9,7 @@ function read(key, fallback) { try { return JSON.parse(localStorage.getItem(key)
 export class NovaSyncClient {
   constructor(config, callbacks) {
     this.config = config; this.callbacks = callbacks; this.session = null; this.document = emptyDocument();
-    this.previous = {}; this.generation = 0; this.busy = false; this.status = 'signed-out'; this.lastSynced = null;
+    this.previous = {}; this.generation = 0; this.busy = false; this.status = 'signed-out'; this.lastSynced = null; this.connectDirty = true; this.serverRevision = null;
     this.actor = localStorage.getItem(actorKey) || crypto.randomUUID(); localStorage.setItem(actorKey, this.actor);
     this.configured = Boolean(config.url && config.publishableKey);
     if (this.configured) {
@@ -83,10 +83,11 @@ export class NovaSyncClient {
   }
   async activate(session, mergeGuest) {
     if (!validUser(session.user)) throw Error('Invalid account identity.');
+    this.connectDirty = true; this.serverRevision = null;
     const epoch = ++this.generation, guestValues = mergeGuest ? this.callbacks.values() : null;
     this.session = session; this.activeUser = session.user; this.saveSession();
     this.document = validateDocument(read(documentKey(this.user.id), emptyDocument()));
-    this.previous = valuesOf(this.document);
+    this.previous = valuesOf(this.document); this.appliedLibrary = null;
     const cached = read(accountLibraryKey(this.user.id), null);
     this.callbacks.activate(this.user, cached);
     if (guestValues) {
@@ -101,9 +102,9 @@ export class NovaSyncClient {
   changed() {
     if (!this.user || this.applying) return;
     try {
-      const next = this.callbacks.values();
+      const next = {...this.callbacks.values(), ...this.connectValues()};
       this.document = updateDocument(this.document, this.previous, next, this.actor);
-      this.previous = next; this.saveDocument(); this.updateStatus('pending'); this.schedule();
+      this.previous = next; this.connectDirty = true; this.saveDocument(); this.updateStatus('pending'); this.schedule();
     } catch (error) { this.updateStatus('error', error.message); }
   }
   schedule(delay = 700) { if (!this.user || !this.configured) return; clearTimeout(this.timer); this.timer = setTimeout(() => this.sync(), delay); }
@@ -124,14 +125,14 @@ export class NovaSyncClient {
         const remote = rows[0] ? validateDocument(rows[0].document) : emptyDocument();
         const candidate = mergeDocuments(this.document, remote), revision = rows[0]?.revision || 0;
         if (documentsEqual(candidate, remote)) {
-          this.document = candidate; this.applyCurrent(); this.lastSynced = Date.now(); this.updateStatus('synced'); return;
+          this.document = candidate; this.connectDirty = false; this.serverRevision = revision; this.applyCurrent(); this.lastSynced = Date.now(); this.updateStatus('synced'); return;
         }
         const result = await this.request('/rest/v1/rpc/save_nova_music_library', {method: 'POST', authenticated: true, body: {expected_revision: revision, library_document: candidate}});
         this.assertCurrent(epoch, userID);
         if (result.conflict) continue;
         if (!Number.isSafeInteger(result.revision) || result.revision <= revision) throw Error('The sync service did not confirm your changes.');
         // A user may edit while this request is in flight. Keep those newer records.
-        this.document = mergeDocuments(candidate, this.document); this.applyCurrent();
+        this.document = mergeDocuments(candidate, this.document); this.connectDirty = !documentsEqual(this.document,candidate); this.serverRevision = result.revision; this.applyCurrent();
         if (!documentsEqual(this.document, candidate)) continue;
         this.lastSynced = Date.now(); this.updateStatus('synced');
         return;
@@ -140,10 +141,33 @@ export class NovaSyncClient {
     } catch (error) { if (epoch === this.generation) this.updateStatus(navigator.onLine ? 'error' : 'offline', error.message); }
     finally { this.busy = false; if (epoch !== this.generation && this.user) this.schedule(0); }
   }
+  async pollConnect() {
+    if(!this.user)return;
+    if(this.connectDirty || this.serverRevision === null || ['error','offline'].includes(this.status)){await this.sync();return;}
+    const epoch=this.generation,id=this.user.id;
+    const rows=await this.request('/rest/v1/nova_music_libraries?select=revision&user_id=eq.'+encodeURIComponent(id),{authenticated:true});
+    this.assertCurrent(epoch,id);
+    if(!Array.isArray(rows)||rows.length>1)throw Error('Unexpected playback response.');
+    if((rows[0]?.revision||0)!==this.serverRevision)await this.sync();
+    else this.callbacks.connect?.(valuesOf(this.document));
+  }
+  connectValues() { return Object.fromEntries(Object.entries(valuesOf(this.document)).filter(([key])=>key.startsWith('connect:'))); }
+  setConnectValues(values) {
+    if (!this.user) return;
+    if (Object.keys(values).some(key=>!key.startsWith('connect:'))) throw Error('Invalid playback record.');
+    const previous=valuesOf(this.document),next={...previous,...values};
+    this.document=updateDocument(this.document,previous,next,this.actor);
+    this.previous={...this.previous,...values};this.connectDirty=true;this.saveDocument();
+  }
   applyCurrent() {
     const values = valuesOf(this.document);
     this.applying = true;
-    try { this.callbacks.apply(values); this.previous = this.callbacks.values(); this.saveDocument(); }
+    try {
+      const library=JSON.stringify(sortLibrary(Object.fromEntries(Object.entries(values).filter(([key])=>!key.startsWith('connect:')))));
+      if(library!==this.appliedLibrary){this.callbacks.apply(values);this.appliedLibrary=library;}
+      this.previous = {...this.callbacks.values(),...this.connectValues()}; this.saveDocument();
+      this.callbacks.connect?.(values);
+    }
     finally { this.applying = false; }
   }
   async signOut() {
@@ -184,6 +208,7 @@ export class NovaSyncClient {
   assertCurrent(epoch, id) { if (epoch !== this.generation || id !== this.user?.id) throw Error('The account changed while syncing.'); }
   requireConfiguration() { if (!this.configured) throw Error('Account sync is not available yet. Your library remains on this device.'); }
 }
+function sortLibrary(value) { if(Array.isArray(value))return value.map(sortLibrary);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,sortLibrary(value[key])]));return value; }
 function validUser(user) { return user && /^[0-9a-f-]{36}$/i.test(user.id) && typeof user.email === 'string'; }
 function isServiceKey(key) { try { return JSON.parse(atob(key.split('.')[1])).role === 'service_role'; } catch { return false; } }
 

@@ -36,3 +36,18 @@ html,body{height:100%;overflow:hidden}body{background:#000}button,a,input,summar
 @media(max-width:800px){.provider-search-heading{align-items:flex-start;font-size:12px}.provider-top{gap:16px;min-height:120px}.provider-top .top-result-art{width:80px;height:80px}.provider-top h3{font-size:24px}.provider-result{gap:12px}.provider-result .song-time{display:none}.update-banner{left:12px;right:12px}}
 
 #import-progress{width:100%;height:8px;accent-color:var(--accent)}
+
+/* Playlist review and shared full-catalog song picker. */
+.review-summary{display:flex;align-items:center;gap:16px;padding:18px;margin-bottom:24px;border-radius:12px;background:var(--surface,#242424);color:var(--text,#fff)}
+.review-summary>svg{width:26px;height:26px;flex:none}.review-summary>svg:last-child{margin-left:auto;width:18px}
+.review-summary span,.review-row span,.song-search-row span{display:flex;flex-direction:column;gap:5px;min-width:0;text-align:left}
+.review-summary small,.review-row small,.song-search-row small{color:var(--muted,#aaa);font-size:13px;line-height:1.45}
+.review-row,.song-search-row{display:flex;align-items:center;gap:14px;width:100%;padding:15px 12px;border:0;border-bottom:1px solid #ffffff12;border-radius:8px;background:transparent;color:inherit;text-align:left;white-space:normal}
+button.review-row:hover,button.song-search-row:hover{background:#ffffff0e}.review-row>span,.song-search-row>span{flex:1}
+.review-row>svg,.song-search-row>svg{flex:none;width:20px;height:20px}.review-playlist{color:var(--accent,#1ed760)!important}
+.song-search-row .song-image{width:48px;height:48px;flex:none;object-fit:cover;border-radius:5px}.song-search-row:disabled{opacity:.65}
+.paired-review summary{cursor:pointer;padding:18px 0}.import-review-row{border-bottom:1px solid #ffffff12}.import-review-row>.text-button{margin:0 12px 12px}
+#song-search-results{min-height:100px;max-height:55vh;overflow-y:auto}
+@media(max-width:600px){.review-row,.song-search-row{padding:14px 6px}.review-row strong,.song-search-row strong{font-size:15px}}
+
+.dismiss-keyboard{display:none}.global-search:focus-within .dismiss-keyboard{display:grid}

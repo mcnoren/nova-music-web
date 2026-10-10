@@ -105,3 +105,77 @@ struct MusicAccountProfile: Codable, Equatable, Sendable {
         var result = self; result.name = name.trimmingCharacters(in:.whitespacesAndNewlines); return result
     }
 }
+
+struct MusicConnectedDevice: Codable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var at: Double
+    var online: Bool { at.isFinite && Date().timeIntervalSince1970 * 1000 - at < 90000 && at <= Date().timeIntervalSince1970 * 1000 + 10000 }
+}
+struct MusicConnectedSong: Codable, Equatable {
+    var id: String, title: String, artist: String
+    var artwork: String? = nil, album: String? = nil, duration: Double? = nil
+    var source = "youtube"
+    var artistId: String? = nil, albumId: String? = nil
+    init(_ video: YouTubeVideo) {
+        id = video.id; title = video.title; artist = video.channel
+        artwork = video.thumbnail?.absoluteString; album = video.albumTitle
+        duration = video.durationLabel?.split(separator:":").compactMap { Double($0) }.reduce(0) { $0 * 60 + $1 }
+        artistId = video.channelID; albumId = video.albumID
+    }
+    var video: YouTubeVideo {
+        var song = YouTubeVideo(id:id,title:title,channel:artist,thumbnail:artwork.flatMap(URL.init(string:)))
+        if let duration, duration.isFinite, duration >= 0, duration < 864000 { song.durationLabel = String(format:"%d:%02d",Int(duration)/60,Int(duration)%60) }
+        song.albumTitle = album; song.channelID = artistId; song.albumID = albumId
+        return song
+    }
+}
+struct MusicConnectedLyrics: Codable, Equatable {
+    struct Line: Codable, Equatable {
+        var time: Double, text: String
+        var endTime: Double? = nil
+    }
+    var songID: String, recordingID: String
+    var loaded: Bool
+    var plain: String
+    var lines: [Line]
+    var instrumental: Bool
+    var source: String
+    var sourceURL: String? = nil
+    var offset: Double = 0, rate: Double = 1
+    var valid: Bool {
+        YouTubeLink.validID(songID) && YouTubeLink.validID(recordingID) && plain.utf16.count <= 200000 &&
+        lines.count <= 2000 && lines.allSatisfy { $0.time.isFinite && $0.time >= 0 && $0.text.utf16.count <= 8000 && ($0.endTime.map { $0.isFinite && $0 >= 0 } ?? true) } &&
+        LyricCalibration(offset:offset,rate:rate).isValid
+    }
+    var track: TrackLyrics? {
+        guard loaded, valid else { return nil }
+        return TrackLyrics(lines:TrackLyrics.normalizedLines(lines.enumerated().map { SyncedLyricLine(id:$0.offset,time:$0.element.time,text:$0.element.text,endTime:$0.element.endTime) }),plainText:plain,instrumental:instrumental,source:source,sourceURL:sourceURL.flatMap(URL.init(string:)) ?? URL(string:"https://lrclib.net")!)
+    }
+}
+struct MusicConnectedSnapshot: Codable, Equatable {
+    var queue: [MusicConnectedSong] = []
+    var index = 0
+    var position: Double = 0
+    var playing = false
+    var shuffle = false
+    var `repeat` = 0
+    var at: Double? = nil
+    var owner: String? = nil, command: String? = nil
+    var lyrics: MusicConnectedLyrics? = nil
+    var valid: Bool {
+        queue.count <= 1000 && queue.allSatisfy { YouTubeLink.validID($0.id) && $0.source == "youtube" } &&
+        (queue.isEmpty ? index == 0 : queue.indices.contains(index)) && position.isFinite && position >= 0 && (0...2).contains(`repeat`) &&
+        (at?.isFinite ?? true) && (lyrics?.valid ?? true)
+    }
+    func advancedPosition(now: Double = Date().timeIntervalSince1970 * 1000) -> Double {
+        let elapsed = playing ? max(0,min(90,(now - (at ?? now)) / 1000)) : 0
+        return min(queue.indices.contains(index) ? (queue[index].duration.flatMap { $0 > 0 && $0.isFinite ? $0 : nil } ?? .infinity) : .infinity,position + elapsed)
+    }
+}
+struct MusicConnectedSession: Codable {
+    var owner: String, command: String
+    var at: Double
+    var snapshot: MusicConnectedSnapshot
+    var valid: Bool { UUID(uuidString:owner) != nil && UUID(uuidString:command) != nil && at.isFinite && snapshot.valid }
+}
