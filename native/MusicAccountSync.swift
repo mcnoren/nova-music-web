@@ -40,6 +40,8 @@ final class MusicAccountSync: ObservableObject {
     @Published private(set) var outputError: String?
     private var connectTask: Task<Void,Never>?, commandTask: Task<Void,Never>?
     private var mirrorClockTask: Task<Void,Never>?
+    private var freezeTask: Task<Void,Never>?
+    private var preparingCommand: String?, acknowledgedHandoff: String?
     private var appliedCommand: String?, lastPresence = Date.distantPast, lastStatus = Date.distantPast
     private var applyingPlayback = false, remoteMirroring = false, wasOutput = false
     private var appliedLibrary: [String:NovaSyncValue]?
@@ -406,6 +408,7 @@ extension MusicAccountSync {
         var snapshot = session.snapshot
         if let status = try? document.values["connect:status"]?.decoded(MusicConnectedSnapshot.self), status.valid,
            status.owner == session.owner, status.command == session.command { snapshot = status }
+        else { snapshot.playing = false }
         if Date().timeIntervalSince1970 * 1000 - (snapshot.at ?? session.at) >= 90000 { snapshot.playing = false }
         return snapshot
     }
@@ -443,9 +446,33 @@ extension MusicAccountSync {
         if !controlsRemoteOutput { mirrorClockTask?.cancel(); mirrorClockTask = nil }
         if isOutput, let session, session.command != appliedCommand,
            (Date().timeIntervalSince1970 * 1000 - session.at < 120000 || appliedCommand == nil), session.at <= Date().timeIntervalSince1970 * 1000 + 10000 {
+            let statusCommand = try? document.values["connect:status"]?.decoded(MusicConnectedSnapshot.self).command
+            let restored = appliedCommand == nil && (statusCommand == session.command || Date().timeIntervalSince1970 * 1000 - session.at >= 90000) ? connectedSnapshot : nil
+            freezeTask?.cancel(); preparingCommand = nil; acknowledgedHandoff = nil
             appliedCommand = session.command
-            applyPlayback(connectedSnapshot ?? session.snapshot)
-            publishConnectionStatus()
+            if let handoff = session.snapshot.handoff {
+                preparingCommand = session.command
+                let epoch = generation
+                freezeTask = Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        self.applyingPlayback = true
+                        store.player.pause()
+                        self.applyingPlayback = false
+                        let position = try await store.player.freezeConnectedClock()
+                        guard !Task.isCancelled, self.generation == epoch, self.connectedSession?.command == session.command, self.connectedSession?.owner == self.deviceID else { return }
+                        store.player.currentTime = position
+                        self.preparingCommand = nil; self.acknowledgedHandoff = handoff
+                        self.publishConnectionStatus(); await self.sync()
+                    } catch {
+                        self.applyingPlayback = false
+                        if self.generation == epoch { self.outputError = "The output could not confirm its position. Try again." }
+                    }
+                }
+            } else {
+                applyPlayback(restored ?? session.snapshot)
+                publishConnectionStatus()
+            }
         } else if controlsRemoteOutput, let snapshot = connectedSnapshot {
             remoteMirroring = true; applyingPlayback = true; defer { applyingPlayback = false }
             let tracks = snapshot.queue.map(\.video), previousSong = store.current
@@ -486,13 +513,13 @@ extension MusicAccountSync {
         else { player.shuffled = snapshot.shuffle }
         player.repeatMode = snapshot.repeat == 0 ? .off : snapshot.repeat == 1 ? .all : .one
         if let lyrics = snapshot.lyrics, lyrics.songID == song.id { player.lyricCalibration = LyricCalibration(offset:lyrics.offset,rate:lyrics.rate) }
-        player.seek(to:snapshot.advancedPosition())
+        player.seek(to:snapshot.position)
         if snapshot.playing { player.play() } else { player.pause() }
     }
     private func publishConnectionStatus() {
-        guard let session = connectedSession, session.owner == deviceID, session.command == appliedCommand else { return }
+        guard preparingCommand == nil, let session = connectedSession, session.owner == deviceID, session.command == appliedCommand else { return }
         var snapshot = localSnapshot(); guard snapshot.valid else { return }
-        snapshot.owner = deviceID; snapshot.command = appliedCommand
+        snapshot.owner = deviceID; snapshot.command = appliedCommand; snapshot.handoff = acknowledgedHandoff
         try? setConnection(["connect:status":.encoded(snapshot)])
     }
     fileprivate func connectTick() async {
@@ -520,13 +547,14 @@ extension MusicAccountSync {
     }
     private func resetConnection() {
         mirrorClockTask?.cancel(); mirrorClockTask = nil
+        freezeTask?.cancel(); freezeTask = nil; preparingCommand = nil; acknowledgedHandoff = nil
         commandTask?.cancel(); commandTask = nil
         if wasOutput || remoteMirroring { applyingPlayback = true; store?.player.stop(); applyingPlayback = false; store?.current = nil }
         appliedCommand = nil; wasOutput = false; remoteMirroring = false
         outputDevices = []; outputID = nil; outputName = "This device"; outputError = nil
         lastPresence = .distantPast; lastStatus = .distantPast; connectionNeedsSync = true; serverRevision = nil
     }
-    private func sendPlayback(output: String? = nil, change: @escaping (MusicConnectedSnapshot) -> MusicConnectedSnapshot) {
+    private func sendPlayback(output: String? = nil, transfer: Bool = false, change: @escaping (MusicConnectedSnapshot) -> MusicConnectedSnapshot) {
         let preceding = commandTask, epoch = generation
         commandTask = Task { [weak self] in
             await preceding?.value
@@ -537,7 +565,26 @@ extension MusicAccountSync {
                 guard self.error == nil else { throw NovaSyncFailure.message("Could not reach your devices. Check your connection.") }
                 let owner = output ?? self.connectedSession?.owner ?? self.deviceID
                 if owner != self.deviceID && !self.outputDevices.contains(where:{ $0.id == owner && $0.online }) { throw NovaSyncFailure.message("That device is unavailable. Choose an output location.") }
-                var next = change(self.connectedSession?.owner == self.deviceID && self.appliedCommand == self.connectedSession?.command ? self.localSnapshot() : self.connectedSnapshot ?? self.localSnapshot()); next.at = Date().timeIntervalSince1970 * 1000
+                var frozen: MusicConnectedSnapshot?
+                if transfer, let old = self.connectedSession, old.owner != owner {
+                    let wasPlaying = self.connectedSnapshot?.playing ?? old.snapshot.playing
+                    var request = self.connectedSnapshot ?? old.snapshot
+                    let handoff = UUID().uuidString.lowercased()
+                    request.handoff = handoff; request.playing = false
+                    let freeze = MusicConnectedSession(owner:old.owner,command:UUID().uuidString.lowercased(),at:Date().timeIntervalSince1970 * 1000,snapshot:request)
+                    try self.setConnection(["connect:session":.encoded(freeze)]); await self.sync()
+                    let deadline = Date().addingTimeInterval(15)
+                    while Date() < deadline {
+                        guard !Task.isCancelled, self.generation == epoch else { return }
+                        guard self.connectedSession?.command == freeze.command else { throw NovaSyncFailure.message("Playback changed during transfer. Choose the output again.") }
+                        if var status = try? self.document.values["connect:status"]?.decoded(MusicConnectedSnapshot.self), status.valid, status.owner == old.owner, status.command == freeze.command, status.handoff == handoff, !status.playing {
+                            status.playing = wasPlaying; status.handoff = nil; frozen = status; break
+                        }
+                        try await Task.sleep(for:.milliseconds(250)); await self.sync()
+                    }
+                    guard frozen != nil else { throw NovaSyncFailure.message("The current output did not confirm its position. Playback stays there; try again.") }
+                }
+                var next = frozen ?? change(self.connectedSession?.owner == self.deviceID && self.appliedCommand == self.connectedSession?.command ? self.localSnapshot() : self.connectedSnapshot ?? self.localSnapshot()); next.at = Date().timeIntervalSince1970 * 1000
                 guard next.valid else { throw NovaSyncFailure.message("This queue cannot be played across devices.") }
                 let session = MusicConnectedSession(owner:owner,command:UUID().uuidString.lowercased(),at:Date().timeIntervalSince1970 * 1000,snapshot:next)
                 try self.setConnection(["connect:session":.encoded(session)])
@@ -549,7 +596,8 @@ extension MusicAccountSync {
         }
     }
     func selectOutput(_ id: String) {
-        sendPlayback(output:id) { current in var next = current; next.position = current.advancedPosition(); return next }
+        guard id != connectedSession?.owner else { return }
+        sendPlayback(output:id,transfer:true) { $0 }
     }
     func routePlay(_ song: YouTubeVideo, queue: [YouTubeVideo], shuffle: Bool?) -> Bool {
         guard user != nil, !applyingPlayback else { return false }

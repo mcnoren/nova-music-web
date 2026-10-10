@@ -15,7 +15,7 @@ export function validSnapshot(value) {
     Number.isInteger(value.index) && (value.queue.length ? value.index >= 0 && value.index < value.queue.length : value.index === 0) &&
     Number.isFinite(value.position) && value.position >= 0 && typeof value.playing === 'boolean' &&
     typeof value.shuffle === 'boolean' && [0,1,2].includes(value.repeat) &&
-    (value.at==null || Number.isFinite(value.at)) && (value.lyrics==null || validConnectedLyrics(value.lyrics));
+    (value.at==null || Number.isFinite(value.at)) && (value.handoff==null || typeof value.handoff==='string' && /^[a-f0-9-]{36}$/i.test(value.handoff)) && (value.lyrics==null || validConnectedLyrics(value.lyrics));
 }
 export function snapshotPosition(snapshot, now = Date.now()) {
   const age=now-(snapshot.at ?? now);
@@ -25,7 +25,7 @@ export function snapshotPosition(snapshot, now = Date.now()) {
 export class NovaConnect {
   constructor(account, options) {
     this.account = account; this.options = options; this.id = options.id;
-    this.values = {}; this.applied = null; this.wasOwner = false; this.wasRemote = false; this.generation = 0; this.serial = Promise.resolve();
+    this.values = {}; this.applied = null; this.wasOwner = false; this.wasRemote = false; this.generation = 0; this.serial = Promise.resolve(); this.preparing=null; this.acknowledgedHandoff=null;
   }
   get devices() {
     const now = Date.now();
@@ -40,26 +40,35 @@ export class NovaConnect {
     const status=this.values[STATUS_KEY], session=this.session;
     const snapshot=session && status?.owner === session.owner && status?.command === session.command && validSnapshot(status)?status:session?.snapshot;
     if(snapshot && Date.now()-(snapshot.at ?? session.at)>=ONLINE_MS)return {...snapshot,playing:false};
-    return snapshot;
+    return snapshot && !(status?.owner===session?.owner && status?.command===session?.command) ? {...snapshot,playing:false} : snapshot;
   }
-  reset() { this.generation++; if(this.wasOwner || this.wasRemote || this.owner && this.owner!==this.id)this.options.stop();this.values={};this.applied=null;this.wasOwner=false;this.wasRemote=false;this.lastPresence=null;this.lastStatus=null;this.options.changed?.(); }
+  reset() { this.generation++; if(this.wasOwner || this.wasRemote || this.owner && this.owner!==this.id)this.options.stop();this.values={};this.preparing=null;this.acknowledgedHandoff=null;this.applied=null;this.wasOwner=false;this.wasRemote=false;this.lastPresence=null;this.lastStatus=null;this.options.changed?.(); }
   async receive(values) {
     this.values=Object.fromEntries(Object.entries(values).filter(([key])=>key.startsWith('connect:')));
     const session=this.session, owner=session?.owner === this.id;
     if(this.wasOwner && !owner || this.remote && !this.wasRemote)this.options.stop();
     this.wasOwner=owner;this.wasRemote=this.remote;
     if(owner && session.command !== this.applied && (Date.now()-session.at < COMMAND_MS || this.applied===null) && session.at <= Date.now()+10000) {
-      this.applied=session.command;
+      const restored=this.applied===null && (this.values[STATUS_KEY]?.command===session.command || Date.now()-session.at>=ONLINE_MS) ? this.snapshot : null;
+      this.applied=session.command; this.preparing=session.command; this.acknowledgedHandoff=null;
       const generation=this.generation;
-      try { await this.options.apply(this.snapshot || session.snapshot); if(generation!==this.generation || this.owner!==this.id){this.options.stop();return;} this.publishStatus(); }
+      try {
+        if(session.snapshot.handoff){
+          if(!this.options.freeze)throw Error('Update this output before transferring playback.');
+          await this.options.freeze();
+        }else await this.options.apply(restored || session.snapshot);
+        if(generation!==this.generation || this.owner!==this.id){this.options.stop();return;}
+        if(this.applied!==session.command)return;
+        this.preparing=null; this.acknowledgedHandoff=session.snapshot.handoff || null; this.publishStatus();
+      }
       catch(error){if(generation===this.generation && this.owner===this.id)this.options.error?.(error.message);}
     } else if(this.remote && this.snapshot) this.options.mirror(this.snapshot, this.name, this.online);
     this.options.changed?.();
   }
   publishStatus() {
-    if(!this.account.user || this.owner !== this.id || this.applied !== this.session?.command)return;
+    if(this.preparing || !this.account.user || this.owner !== this.id || this.applied !== this.session?.command)return;
     const snapshot=this.options.snapshot();if(!validSnapshot(snapshot))return;
-    this.account.setConnectValues({[STATUS_KEY]:{...snapshot,owner:this.id,command:this.applied,at:Date.now()}});
+    this.account.setConnectValues({[STATUS_KEY]:{...snapshot,handoff:this.acknowledgedHandoff,owner:this.id,command:this.applied,at:Date.now()}});
   }
   async tick() {
     if(!this.account.user)return;
@@ -72,23 +81,48 @@ export class NovaConnect {
     const local=this.options.snapshot();
     if(!this.session && this.account.status==='synced' && local?.playing && local.queue?.length && validSnapshot(local))await this.command(local);
   }
-  command(snapshot, output) {
-    // Serialize local gestures, refreshing the selected output before publishing intent.
+  enqueue(work) {
     const generation=this.generation;
-    const work=this.serial.catch(()=>{}).then(async()=>{
-      if(!this.account.user)throw Error('Sign in on both devices to connect playback.');
-      await this.account.sync();if(generation!==this.generation)throw Error('The account changed.');
-      if(['error','offline'].includes(this.account.status))throw Error('Could not reach your devices. Try again when connected.');
-      const owner=output || this.owner || this.id;
-      if(owner!==this.id && !this.devices.some(d=>d.id===owner))throw Error('That device is unavailable. Choose an output location.');
-      const base=this.owner===this.id&&this.applied===this.session?.command?this.options.snapshot():this.snapshot||this.options.snapshot();
-      const next=typeof snapshot === 'function' ? snapshot(base) : snapshot;
-      if(!validSnapshot(next))throw Error('Only YouTube Music songs can be played across devices.');
-      const session={owner,command:crypto.randomUUID(),at:Date.now(),snapshot:{...next,at:Date.now()}};
-      this.account.setConnectValues({[SESSION_KEY]:session});
-      await this.account.sync();if(generation!==this.generation)return;
-      if(['error','offline'].includes(this.account.status))throw Error('Playback change could not be sent. Check your connection.');
-    });this.serial=work;return work;
+    const pending=this.serial.catch(()=>{}).then(()=>work(generation));this.serial=pending;return pending;
   }
-  transfer(output) { return this.command(s=>({...s,position:snapshotPosition(s)}), output); }
+  async refresh(generation) {
+    if(!this.account.user)throw Error('Sign in on both devices to connect playback.');
+    await this.account.sync();
+    if(generation!==this.generation)throw Error('The account changed.');
+    if(['error','offline'].includes(this.account.status))throw Error('Could not reach your devices. Try again when connected.');
+  }
+  async send(snapshot, output, generation, expectedCommand) {
+    await this.refresh(generation);
+    if(expectedCommand && this.session?.command!==expectedCommand)throw Error('Playback changed during transfer. Choose the output again.');
+    const owner=output || this.owner || this.id;
+    if(owner!==this.id && !this.devices.some(d=>d.id===owner))throw Error('That device is unavailable. Choose an output location.');
+    const base=this.owner===this.id&&this.applied===this.session?.command?this.options.snapshot():this.snapshot||this.options.snapshot();
+    const next=typeof snapshot === 'function' ? snapshot(base) : snapshot;
+    if(!validSnapshot(next))throw Error('Only YouTube Music songs can be played across devices.');
+    const session={owner,command:crypto.randomUUID(),at:Date.now(),snapshot:{...next,at:Date.now()}};
+    this.account.setConnectValues({[SESSION_KEY]:session});
+    await this.refresh(generation);return session;
+  }
+  command(snapshot, output) { return this.enqueue(generation=>this.send(snapshot,output,generation)); }
+  transfer(output) {
+    return this.enqueue(async generation=>{
+      await this.refresh(generation);
+      if(output===this.owner)return;
+      if(output!==this.id&&!this.devices.some(d=>d.id===output))throw Error('That device is unavailable. Choose an output location.');
+      if(!this.session)return this.send(this.options.snapshot(),output,generation);
+      const wasPlaying=this.snapshot?.playing ?? this.session.snapshot.playing;
+      const handoff=crypto.randomUUID();
+      const frozen=await this.send(s=>({...s,playing:false,handoff}),this.owner,generation);
+      const deadline=Date.now()+(this.options.handoffTimeout || 15000);
+      while(Date.now()<deadline){
+        if(this.session?.command!==frozen.command)throw Error('Playback changed during transfer. Choose the output again.');
+        const status=this.values[STATUS_KEY];
+        if(status?.owner===frozen.owner&&status.command===frozen.command&&status.handoff===handoff&&!status.playing&&validSnapshot(status)){
+          return this.send({...status,playing:Boolean(wasPlaying),handoff:null},output,generation,frozen.command);
+        }
+        await new Promise(resolve=>setTimeout(resolve,250));await this.refresh(generation);
+      }
+      throw Error('The current output did not confirm its position. Playback stays there; try again.');
+    });
+  }
 }

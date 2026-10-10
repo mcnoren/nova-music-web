@@ -37,7 +37,7 @@ export class NovaSyncClient {
       await this.activate({...this.session, user}, false);
     } catch (error) {
       if (epoch !== this.generation) return;
-      this.session = null; this.activeUser = null; sessionStorage.removeItem(SESSION); this.updateStatus('signed-out', 'Sign in again to access your account library.');
+      this.session = null; this.activeUser = null; sessionStorage.removeItem(SESSION); window.novaDesktop?.post({type:'session',value:null}); this.updateStatus('signed-out', 'Sign in again to access your account library.');
     }
   }
   validateEmail(email) {
@@ -176,7 +176,7 @@ export class NovaSyncClient {
     if (['error', 'offline', 'pending'].includes(this.status)) throw Error('Some changes have not synced. Go online and sync before signing out so those changes are preserved.');
     const old = this.session, id = this.user.id;
     ++this.generation; clearTimeout(this.timer); this.session = null; this.activeUser = null;
-    sessionStorage.removeItem(SESSION); localStorage.removeItem(accountLibraryKey(id)); localStorage.removeItem(documentKey(id));
+    sessionStorage.removeItem(SESSION); window.novaDesktop?.post({type:'session',value:null}); localStorage.removeItem(accountLibraryKey(id)); localStorage.removeItem(documentKey(id));
     this.document = emptyDocument(); this.previous = {}; this.callbacks.deactivate(); this.updateStatus('signed-out');
     try { await this.request('/auth/v1/logout?scope=local', {method: 'POST', token: old.access_token}); } catch { /* Local credentials have already been cleared. */ }
   }
@@ -184,6 +184,7 @@ export class NovaSyncClient {
   saveSession() {
     if (this.session.expires_in && !this.session.expires_at) this.session.expires_at = Math.floor(Date.now() / 1000) + this.session.expires_in;
     sessionStorage.setItem(SESSION, JSON.stringify(this.session));
+    window.novaDesktop?.post({type:'session',value:JSON.stringify(this.session)});
   }
   async token() {
     if (!this.session) throw Error('Sign in to sync your library.');

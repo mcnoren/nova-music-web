@@ -5,7 +5,7 @@
   <meta name="theme-color" content="#000000"><meta name="description" content="Nova Music for the web. Discover music, explore classical works, and make your own library of songs, albums, playlists and folders.">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>Nova Music</title><link rel="icon" href="assets/icon-192.png"><link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="styles.css?v=256a558270c4">
+  <link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="styles.css?v=37b8a0de8d3c">
 </head>
 <body>
   <a class="skip" href="#content">Skip to music</a>
@@ -28,12 +28,13 @@
   <footer class="player-bar" aria-label="Music player">
     <button id="current-song" class="current-song" data-action="player"><span class="art-placeholder small">♪</span><span><strong>Choose a song</strong><small>Choose music from your library or Search</small></span></button>
     <div class="playback"><div class="transport"><button data-action="shuffle" class="icon-button" aria-label="Shuffle" aria-pressed="false"><span data-icon="shuffle"></span></button><button data-action="previous" class="icon-button" aria-label="Previous song"><span data-icon="previous"></span></button><button data-action="toggle-play" class="play-main" aria-label="Play"><span data-icon="play"></span></button><button data-action="next" class="icon-button" aria-label="Next song"><span data-icon="next"></span></button><button data-action="repeat" class="icon-button" aria-label="Repeat off"><span data-icon="repeat"></span></button></div><div class="timeline"><span id="elapsed">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Playback position"><span id="duration">0:00</span></div></div>
-    <div class="player-tools"><button data-action="output-location" class="icon-button" aria-label="Output location"><span data-icon="screen"></span></button><button data-action="lyrics" class="icon-button" aria-label="Lyrics"><span data-icon="lyrics"></span></button><button data-action="queue" class="icon-button" aria-label="Queue"><span data-icon="queue"></span></button><span data-icon="volume"></span><input id="volume" type="range" min="0" max="100" value="80" aria-label="Volume"></div>
+    <div class="player-tools"><button data-action="output-location" class="icon-button" aria-label="Output location"><span data-icon="screen"></span></button><button data-action="lyrics" class="icon-button" aria-label="Lyrics"><span data-icon="lyrics"></span></button><button data-action="fullscreen-lyrics" class="icon-button" aria-label="Full screen lyrics"><span data-icon="screen"></span></button><button data-action="queue" class="icon-button" aria-label="Queue"><span data-icon="queue"></span></button><span data-icon="volume"></span><input id="volume" type="range" min="0" max="100" value="80" aria-label="Volume"></div>
   </footer>
   <nav class="mobile-nav" aria-label="Mobile navigation"><a href="#library" data-nav="library"><span data-icon="home"></span>Home</a><a href="#classical" data-nav="classical"><span data-icon="classical"></span>Classical</a><a href="#search" data-nav="search"><span data-icon="search"></span>Search</a></nav>
   <dialog id="modal"><div class="modal-heading"><h2 id="modal-title"></h2><button data-action="close-modal" class="icon-button" aria-label="Close dialog">×</button></div><div id="modal-body"></div></dialog>
   <div id="context-menu" class="context-menu" role="menu" hidden></div>
   <div id="update-banner" class="update-banner" role="status" hidden><span>A Nova Music update is ready.</span><button data-action="reload">Refresh</button></div>
   <div id="toast" role="status" aria-live="polite"></div><audio id="audio" preload="metadata"></audio>
-  <script type="module" src="app.js?v=e72dedda7b4d"></script>
+  <script type="module" src="app.js?v=2d324b543a70"></script>
+<dialog id="lyrics-fullscreen" class="fullscreen-lyrics" aria-label="Full screen lyrics"><div id="fullscreen-lyrics-body"></div></dialog>
 </body></html>

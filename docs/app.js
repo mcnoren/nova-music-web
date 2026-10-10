@@ -3,9 +3,9 @@ import {defaultProfile, validateProfile, profileIcons, profileColors} from './pr
 import {parseLRC, lookupLyrics, lyricData as providerLyricData, activeLyric, normalizedLines, playbackSample, preferredAudio} from './lyrics.js?v=8ecae04bc17e';
 import {MusicSearchClient, rankLocal, mergeResults, normalizeSearch, rankSearch, providerItems} from './music-search.js?v=4098b6ac99a2';
 import {syncConfig} from './sync-config.js?v=ebe8169ae84b';
-import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=2d0c4e8ad538';
+import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=5aae2e53ced1';
 import {libraryValues, applyLibraryValues} from './sync-model.js?v=57b8b9d3a790';
-import {NovaConnect, snapshotPosition} from './connect.js?v=7af1c7e50def';
+import {NovaConnect, snapshotPosition} from './connect.js?v=dcd231371e87';
 let accountClient = null, connect = null, applyingConnectedPlayback = false, mirroredPlayback = null;
 const authReturn=parseAuthReturn(location.hash);
 if(authReturn)history.replaceState(null,'',location.pathname+location.search);
@@ -25,7 +25,7 @@ let catalog={songs:[],albums:[],artists:[],composers:[],works:[],shelves:{}}, so
 let routeToken=0,mood='For you',queue=[],queueIndex=-1,current=null,playing=false,shuffle=false,repeat=0,panelTab='song',lyricData=null,lyricToken=0,yt=null,ytPromise=null,seekDragging=false;
 const audio=$('#audio');
 function persist(){try{localStorage.setItem(accountClient?.user?accountLibraryKey(accountClient.user.id):KEY,JSON.stringify(state))}catch{toast('Your device storage is full. Export a library backup in Settings.')}sidebar();accountClient?.changed()}
-function toast(message){$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('visible'),4200)}
+function toast(message){const host=$('#modal').open?$('#modal'):$('#lyrics-fullscreen')?.open?$('#lyrics-fullscreen'):document.body;host.append($('#toast'));$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('visible'),4200)}
 function icons(root=document){$$('[data-icon]',root).forEach(el=>el.innerHTML=icon(el.dataset.icon))}
 function remember(list){for(const song of list){songs.set(song.id,song);if(!catalog.songs.some(s=>s.id===song.id))state.extraSongs[song.id]=song}}
 function getSongs(ids){return [...new Set(ids)].map(id=>songs.get(id)).filter(Boolean).filter(s=>state.settings.explicit||!s.explicit)}
@@ -365,10 +365,11 @@ function seekTo(seconds){if(connect?.remote && !applyingConnectedPlayback){conne
 function updateMediaSession(){if(!navigator.mediaSession||!current)return;try{navigator.mediaSession.metadata=new MediaMetadata({title:current.title,artist:current.artist,album:current.album||'',artwork:current.artwork?[{src:current.artwork}]:[]});for(const[name,fn]of Object.entries({play:()=>{if(!playing)togglePlay()},pause:()=>{if(playing)togglePlay()},previoustrack:()=>action('previous',{}),nexttrack:()=>nextSong(),seekto:e=>seekTo(e.seekTime),seekbackward:e=>seekTo(position()-(e.seekOffset||10)),seekforward:e=>seekTo(position()+(e.seekOffset||10))}))try{navigator.mediaSession.setActionHandler(name,fn)}catch{}}catch{}}
 function openPanel(tab='song'){panelTab=tab;$('#player-panel').hidden=false;renderPanel()}
 function renderPanel(){
+ renderFullscreenLyrics();
  const body=$('#panel-body');$('#player-panel').dataset.view=panelTab;
  $('#panel-switcher').innerHTML=['song','lyrics','queue'].map(t=>`<button data-action="panel-tab" data-value="${t}" aria-pressed="${panelTab===t}" class="${panelTab===t?'active':''}">${{song:'Now playing',lyrics:'Lyrics',queue:'Queue'}[t]}</button>`).join('');
  if(!current){body.innerHTML='<p class="muted">Choose a song to start listening.</p>';return}
- if(panelTab==='lyrics'){body.innerHTML=`<div class="lyrics-track"><strong>${esc(current.title)}</strong><span>${esc(current.artist)}</span>${btn('Retry synced lyrics','lyrics-retry','','text-button')}<div class="lyrics-timing" aria-label="Lyrics timing">${btn('Earlier','lyrics-timing','data-value="0.25" aria-label="Show lyrics a quarter second earlier"')}${btn('Later','lyrics-timing','data-value="-0.25" aria-label="Show lyrics a quarter second later"')}<span>${Number(lyricOffset()).toFixed(2)} s</span>${btn('Reset','lyrics-timing','data-value="reset"')}</div></div><div class="lyrics-scroll" tabindex="0" aria-label="Song lyrics">${lyricsHTML()}</div>`;highlightLyrics(true);return}
+ if(panelTab==='lyrics'){body.innerHTML=`<div class="lyrics-track"><strong>${esc(current.title)}</strong><span>${esc(current.artist)}</span>${btn(icon('screen')+' Full screen','fullscreen-lyrics','','secondary')}${btn('Retry synced lyrics','lyrics-retry','','text-button')}<div class="lyrics-timing" aria-label="Lyrics timing">${btn('Earlier','lyrics-timing','data-value="0.25" aria-label="Show lyrics a quarter second earlier"')}${btn('Later','lyrics-timing','data-value="-0.25" aria-label="Show lyrics a quarter second later"')}<span>${Number(lyricOffset()).toFixed(2)} s</span>${btn('Reset','lyrics-timing','data-value="reset"')}</div></div><div class="lyrics-scroll" tabindex="0" aria-label="Song lyrics">${lyricsHTML()}</div>`;highlightLyrics(true);return}
  let html=panelTab==='song'?`<div class="panel-song">${art(current.artwork,'panel-art',current.title)}<h2>${esc(current.title)}</h2><p>${esc(current.artist)}</p><div class="button-row">${btn(icon('heart'),'like',`data-id="${esc(current.id)}" aria-label="Like song"`,'icon-button'+(state.liked.includes(current.id)?' active':''))}${btn(icon('more'),'song-menu',`data-id="${esc(current.id)}" aria-label="Song options"`,'icon-button')}${btn(icon('screen'),'output-location','aria-label="Output location"','icon-button')}${btn(icon('screen'),'receiver','aria-label="Artwork and lyrics display"','icon-button')}</div></div>`:'';
  if(panelTab==='queue')html+=`<h3>Up next · ${Math.max(0,queue.length-queueIndex-1)} songs</h3><div>${queue.map((id,i)=>{const s=songs.get(id);if(!s)return'';return `<div class="queue-row">${art(s.artwork,'song-image','')}<button class="song-info" data-action="queue-play" data-index="${i}"><strong>${i===queueIndex?'▶ ':''}${esc(s.title)}</strong><small>${esc(s.artist)}</small></button>${btn(icon('up'),'queue-move',`data-index="${i}" data-direction="-1" aria-label="Move up"`,'icon-button')}${btn('×','queue-remove',`data-index="${i}" aria-label="Remove ${esc(s.title)}"`,'icon-button')}</div>`}).join('')}</div>`;
  else html+=`<p class="small-copy">${esc(current.album||'')}${current.explicit?' · Explicit':''}</p><div class="button-row">${btn('Song info','song-info',`data-id="${esc(current.id)}"`)}${btn('Add to playlist','add-playlist',`data-id="${esc(current.id)}"`)}</div><div class="timeline panel-timeline"><span>${time(position())}</span><input type="range" data-panel-seek min="0" max="${duration()||100}" value="${position()}" step="0.1" aria-label="Seek song"><span>${time(duration())}</span></div><div class="transport panel-transport">${btn(icon('shuffle'),'shuffle','aria-label="Shuffle"','icon-button'+(shuffle?' active':''))}${btn(icon('previous'),'previous','aria-label="Previous song"','icon-button')}${btn(icon(playing?'pause':'play'),'toggle-play',`aria-label="${playing?'Pause':'Play'} song"`,'play-main')}${btn(icon('next'),'next','aria-label="Next song"','icon-button')}${btn(icon('repeat'),'repeat','aria-label="Repeat"','icon-button'+(repeat?' active':''))}</div>`;
@@ -410,12 +411,38 @@ function highlightLyrics(force=false){
  $$('[data-line]').forEach(el=>{const on=Number(el.dataset.line)===active;el.classList.toggle('active',on);if(on)el.setAttribute('aria-current','true');else el.removeAttribute('aria-current')});
  if(force||active!==lastLyric){lastLyric=active;for(const container of $$('.lyrics-scroll, #receiver-lyrics')){const target=container.querySelector(`[data-line="${active}"]`);if(target){const y=target.getBoundingClientRect().top-container.getBoundingClientRect().top+container.scrollTop-container.clientHeight*.35;container.scrollTo({top:Math.max(0,y),behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'})}}}
 }
+let lyricsFullscreenRequested=false;
+async function openFullscreenLyrics(){
+ const dialog=$('#lyrics-fullscreen');renderFullscreenLyrics();
+ if(!dialog.open)dialog.showModal();
+ if(window.novaDesktop){window.novaDesktop.post({type:'lyricsFullscreen',enabled:true});}
+ else if(!document.fullscreenElement){try{await document.documentElement.requestFullscreen();lyricsFullscreenRequested=true}catch{}}
+ $('#lyrics-fullscreen [data-action="close-fullscreen-lyrics"]')?.focus();highlightLyrics(true);
+}
+function closeFullscreenLyrics(){
+ $('#lyrics-fullscreen').close();
+ if(window.novaDesktop)window.novaDesktop.post({type:'lyricsFullscreen',enabled:false});
+ if(lyricsFullscreenRequested && document.fullscreenElement)document.exitFullscreen().catch(()=>{});
+ lyricsFullscreenRequested=false;
+ $('[data-action="fullscreen-lyrics"]')?.focus();
+}
+function renderFullscreenLyrics(){
+ const dialog=$('#lyrics-fullscreen');if(!dialog)return;
+ // Preserve the scrolling view while the engine updates its clock.
+ const key=JSON.stringify([current?.id,current?.title,current?.artist,current?.artwork,lyricData]);
+ if(dialog.dataset.track===key)return;dialog.dataset.track=key;
+ $('#fullscreen-lyrics-body').innerHTML=`<header class="fullscreen-lyrics-heading"><span>NOW PLAYING · LYRICS</span>${btn('×','close-fullscreen-lyrics','aria-label="Close full screen lyrics"','icon-button')}</header><div class="fullscreen-lyrics-layout"><aside class="fullscreen-track">${current?`${art(current.artwork,'fullscreen-cover',current.title)}<h1>${esc(current.title)}</h1><p>${esc(current.artist)}</p>`:'<h1>Choose a song to see its lyrics</h1>'}</aside><div class="lyrics-scroll fullscreen-lyrics-scroll" tabindex="0" aria-label="Full screen song lyrics">${current?lyricsHTML():'<p class="muted">Your synced lyrics will appear here.</p>'}</div></div><footer class="fullscreen-lyrics-controls"><div class="transport">${btn(icon('previous'),'previous','aria-label="Previous song"','icon-button')}${btn(icon(playing?'pause':'play'),'toggle-play',`aria-label="${playing?'Pause':'Play'} song"`,'play-main')}${btn(icon('next'),'next','aria-label="Next song"','icon-button')}${btn(icon('screen'),'output-location','aria-label="Output location"','icon-button')}</div><div class="timeline"><span>${time(position())}</span><input type="range" data-panel-seek min="0" max="${duration()||100}" value="${position()}" step="0.1" aria-label="Seek song in full screen"><span>${time(duration())}</span></div></footer>`;
+ highlightLyrics(true);
+}
+$('#lyrics-fullscreen').addEventListener('cancel',event=>{event.preventDefault();closeFullscreenLyrics()});
+document.addEventListener('fullscreenchange',()=>{if(lyricsFullscreenRequested&&!document.fullscreenElement)closeFullscreenLyrics()});
+window.addEventListener('nova-desktop-command',event=>{const commands={lyrics:()=>openFullscreenLyrics(),home:()=>{location.hash='library'},search:()=>{location.hash='search';$('#search-input').focus()},output:outputLocation,play:togglePlay};commands[event.detail]?.()});
 function renderReceiver(){if(!$('#receiver-song'))return;$('#receiver-song').innerHTML=current?`${art(current.artwork,'receiver-art',current.title)}<h1>${esc(current.title)}</h1><p class="muted">${esc(current.artist)}</p>`:'<h1>Choose a song first</h1>';$('#receiver-lyrics').innerHTML=current?lyricsHTML():'';highlightLyrics(true)}
 let lyricDurationRequest='';
 function tick(){
  const d=duration(),p=position();
  if(!seekDragging){$('#seek').max=d||100;$('#seek').value=p;$('#elapsed').textContent=time(p);$('#duration').textContent=time(d)}
- const panel=$('[data-panel-seek]');if(panel&&document.activeElement!==panel){panel.max=d||100;panel.value=p;panel.previousElementSibling.textContent=time(p);panel.nextElementSibling.textContent=time(d)}
+ for(const panel of $$('[data-panel-seek]'))if(document.activeElement!==panel){panel.max=d||100;panel.value=p;panel.previousElementSibling.textContent=time(p);panel.nextElementSibling.textContent=time(d)}
  if(lyricData&&!lyricData.custom&&!sharedConnectedLyrics()?.loaded&&samplePlayback().confirmed){
   const requested=lyricData.requestedDuration??0,key=current.id+':'+Math.round(d);
   if((!requested||Math.abs(requested-d)>1)&&lyricDurationRequest!==key){lyricDurationRequest=key;loadLyrics(current,d)}
@@ -473,6 +500,8 @@ async function action(name,data){
   if(name==='queue-remove'){const i=Number(data.index);if(i===queueIndex){toast('Skip the current song before removing it.');return}queue.splice(i,1);if(i<queueIndex)queueIndex--;renderPanel()}
   if(name==='queue-move'){const i=Number(data.index),j=i+Number(data.direction);if(j<0||j>=queue.length)return;[queue[i],queue[j]]=[queue[j],queue[i]];if(queueIndex===i)queueIndex=j;else if(queueIndex===j)queueIndex=i;renderPanel()}
   if(name==='lyric-seek')seekTo(lyricPlaybackTime(Number(data.time)));
+  if(name==='fullscreen-lyrics'){await openFullscreenLyrics();return}
+  if(name==='close-fullscreen-lyrics'){closeFullscreenLyrics();return}
   if(name==='receiver'){ $('#modal').close();location.hash='receiver';if(current?.source!=='youtube')$('#player-panel').hidden=true;document.documentElement.requestFullscreen?.().catch(()=>{})}
   if(name==='exit-receiver'){document.exitFullscreen?.().catch(()=>{});location.hash='library'}
   if(name==='new-playlist')libraryForm();if(name==='new-smart')libraryForm(null,true);if(name==='edit-playlist')libraryForm(state.playlists.find(p=>p.id===id));
@@ -594,7 +623,7 @@ function account(reauth=false){
  modal(title,`${profileSummary()}${btn('Edit profile icon','edit-profile')}<p class="muted">${recovering?'Choose a new password, then sign in again.':'Use the same account in the app and browser to share your library.'}</p><form id="account-${mode}-form"><label class="field">Email address<input name="email" type="email" autocomplete="email" required value="${esc(recovering?accountEmail:accountClient.user?.email||accountEmail)}" ${recovering||accountClient.user?'readonly':''}></label>${forgot?'':`<label class="field">${recovering?'New password':'Password'}<input name="password" type="password" autocomplete="${creating||recovering?'new-password':'current-password'}" ${creating||recovering?'minlength="12"':''} required></label>`}${creating||recovering?'<label class="field">Confirm password<input name="confirm" type="password" autocomplete="new-password" minlength="12" required></label><p class="small-copy">Use at least 12 characters.</p>':''}${mode==='signin'&&!accountClient.user?'<label class="check-row"><input name="merge" type="checkbox" checked>Add this device’s library to my account</label>':''}<p id="account-form-message" role="status"></p><div class="modal-actions"><button class="primary">${creating?'Create account':recovering?'Save new password':forgot?'Send reset link':'Sign in'}</button></div></form><div class="button-row">${mode==='signin'&&!reauth?btn('Create account','account-mode','data-value="signup"')+btn('Forgot password?','account-mode','data-value="forgot"'):btn('Back to sign in','account-mode','data-value="signin"')}</div><p class="small-copy">${creating?'Confirm your email before signing in. ':''}Provider keys and imported audio are excluded from sync.</p>`)
 }
 async function initializeAccountSync(){try{accountClient=new NovaSyncClient(syncConfig,{values:()=>libraryValues(state,catalog),activate:(user,cached)=>{connect?.reset();collectionPages.clear();publicPlaylists.clear();const deviceSettings={...state.settings};state=cached?{...structuredClone(defaults),...cached}:structuredClone(defaults);state.settings=deviceSettings;},apply:values=>{const next=applyLibraryValues(state,values);state=next;songs=new Map([...catalog.songs,...Object.values(state.extraSongs)].map(s=>[s.id,s]));albums=new Map([...catalog.albums,...Object.values(state.extraAlbums)].map(a=>[a.id,a]));artists=new Map([...catalog.artists,...Object.values(state.extraArtists)].map(a=>[a.id,a]));persist();render();renderPanel();},deactivate:()=>{connect?.reset();collectionPages.clear();publicPlaylists.clear();const deviceSettings={...state.settings};try{state={...structuredClone(defaults),...JSON.parse(localStorage.getItem(KEY)||'{}')}}catch{state=structuredClone(defaults)}state.settings=deviceSettings;songs=new Map([...catalog.songs,...Object.values(state.extraSongs)].map(s=>[s.id,s]));albums=new Map([...catalog.albums,...Object.values(state.extraAlbums)].map(a=>[a.id,a]));artists=new Map([...catalog.artists,...Object.values(state.extraArtists)].map(a=>[a.id,a]));persist();render();},status:updateAccountStatus,connect:values=>{connect?.receive(values)},});
-connect=new NovaConnect(accountClient,{id:browserOutputID(),name:browserOutputName(),snapshot:connectedPlaybackSnapshot,apply:applyConnectedPlayback,stop:stopConnectedPlayback,mirror:mirrorConnectedPlayback,changed:updateOutputButton,error:message=>toast(message)});
+connect=new NovaConnect(accountClient,{id:browserOutputID(),name:browserOutputName(),snapshot:connectedPlaybackSnapshot,apply:applyConnectedPlayback,freeze:freezeConnectedPlayback,stop:stopConnectedPlayback,mirror:mirrorConnectedPlayback,changed:updateOutputButton,error:message=>toast(message)});
 setInterval(()=>connect.tick().catch(()=>{}),2000);
 await accountClient.initialize();await connect.tick();updateAccountStatus(accountClient);if(authReturn){if(authReturn.type==='recovery'){try{accountEmail=await accountClient.beginPasswordRecovery(authReturn.token);accountMode='recovery';account()}catch(error){modal('Password reset',`<p class="notice">${esc(error.message)}</p>${btn('Request a new link','account-mode','data-value="forgot"')}`)}}else{accountMode='signin';account();$('#account-form-message').textContent=authReturn.type==='error'?authReturn.message:'Email confirmed. Sign in with your email and password.'}}}catch{toast('Account sync could not initialize. Your device library is still available.')}}
 const actionBeforeAccount=action;
@@ -625,8 +654,8 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkWebsi
 window.addEventListener('online',checkWebsiteUpdate);setInterval(checkWebsiteUpdate,60000);
 
 
-function browserOutputID(){const key='nova-music-playback-tab';let id=sessionStorage.getItem(key);if(!id){id=crypto.randomUUID();sessionStorage.setItem(key,id)}return id;}
-function browserOutputName(){const platform=navigator.userAgent;return /Macintosh/.test(platform)?'Mac browser':/Windows/.test(platform)?'Windows browser':/iPhone|iPad/.test(platform)?'iPhone browser':/Android/.test(platform)?'Android browser':'Web browser';}
+function browserOutputID(){const storage=window.novaDesktop?localStorage:sessionStorage,key=window.novaDesktop?'nova-music-mac-output':'nova-music-playback-tab';let id=storage.getItem(key);if(!id){id=crypto.randomUUID();storage.setItem(key,id)}return id;}
+function browserOutputName(){if(window.novaDesktop)return 'Mac · Nova Music';const platform=navigator.userAgent;return /Macintosh/.test(platform)?'Mac browser':/Windows/.test(platform)?'Windows browser':/iPhone|iPad/.test(platform)?'iPhone browser':/Android/.test(platform)?'Android browser':'Web browser';}
 function sharedConnectedLyrics(){const value=connect?.remote && mirroredPlayback?.lyrics;return value?.songID===current?.id?value:null;}
 function connectedLyricData(value){return {plain:value.plain,lines:normalizedLines(value.lines),source:value.source,sourceURL:value.sourceURL,instrumental:value.instrumental,missing:!value.instrumental&&!value.plain&&!value.lines.length,custom:true};}
 function connectedPlaybackSnapshot(){
@@ -636,6 +665,19 @@ function connectedPlaybackSnapshot(){
  return {queue:list,index:Math.max(0,queueIndex),position:Math.max(0,position()),playing,shuffle,repeat,at:Date.now(),lyrics};
 }
 function stopConnectedPlayback(){++playToken;++youtubeGeneration;cancelYouTube?.();cancelYouTube=null;audio.pause();audio.removeAttribute('src');audio.load();if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null}yt?.destroy?.();yt=null;ytPromise=null;$('#youtube-host').innerHTML='<div id="youtube-player"></div>';$('#youtube-host').classList.add('hidden');lyricAbort?.abort();++lyricToken;lyricData=null;mirroredPlayback=null;queue=[];queueIndex=-1;current=null;setPlaying(false);$('#current-song').innerHTML='Choose a song';renderPanel();}
+async function freezeConnectedPlayback(){
+ const token=playToken;
+ // Capture the engine after it has paused, never seek to the controller's estimate.
+ if(current?.source==='youtube'){
+  if(!samplePlayback().confirmed)throw Error('Wait for the current output to finish loading, then transfer again.');
+  yt?.pauseVideo?.();
+  const deadline=Date.now()+5000;
+  while(yt && yt.getPlayerState?.()===1 && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,25));
+  if(yt?.getPlayerState?.()===1)throw Error('The output could not pause. Try the transfer again.');
+ }else audio.pause();
+ if(token!==playToken)throw Error('Playback changed during transfer.');
+ setPlaying(false);
+}
 async function applyConnectedPlayback(snapshot){
  const wasRemote=Boolean(mirroredPlayback),selected=snapshot.queue[snapshot.index];
  applyingConnectedPlayback=true;mirroredPlayback=null;
@@ -643,7 +685,7 @@ async function applyConnectedPlayback(snapshot){
   if(!selected){stopConnectedPlayback();queue=[];queueIndex=-1;current=null;$('#current-song').innerHTML='Choose a song';renderPanel();return;}
   const needsLoad=wasRemote||current?.id!==selected.id;
   remember(snapshot.queue);queue=snapshot.queue.map(s=>s.id);queueIndex=snapshot.index;shuffle=snapshot.shuffle;repeat=snapshot.repeat;
-  if(needsLoad)await playCurrent(snapshotPosition(snapshot),snapshot.playing);else {seekTo(snapshotPosition(snapshot));if(snapshot.playing&&!playing)await togglePlay();}
+  if(needsLoad)await playCurrent(snapshot.position,snapshot.playing);else {seekTo(snapshot.position);if(snapshot.playing&&!playing)await togglePlay();}
   if(!snapshot.playing){if(current?.source==='youtube')yt?.pauseVideo?.();else audio.pause();setPlaying(false);}
   renderPanel();updateOutputButton();
  }finally{applyingConnectedPlayback=false;}
@@ -656,9 +698,9 @@ function mirrorConnectedPlayback(snapshot){
  if(previous!==current?.id || previousLyrics!==JSON.stringify(sharedConnectedLyrics())){if(current)loadLyrics(current);else lyricData=null;updateMediaSession();}
  if(panelChanged)renderPanel();tick();
 }
-function updateOutputButton(){for(const button of $$('[data-action="output-location"]')){button.classList.toggle('active',Boolean(connect?.remote));button.setAttribute('aria-label','Output location: '+(connect?.remote?connect.name:'This browser'));button.title=connect?.remote?'Playing on '+connect.name:'Output location';}if($('#output-device-list'))renderOutputDevices();}
+function updateOutputButton(){for(const button of $$('[data-action="output-location"]')){button.classList.toggle('active',Boolean(connect?.remote));button.setAttribute('aria-label','Output location: '+(connect?.remote?connect.name:window.novaDesktop?'This Mac':'This browser'));button.title=connect?.remote?'Playing on '+connect.name:'Output location';}if($('#output-device-list'))renderOutputDevices();}
 function outputLocation(){modal('Output location','<div id="output-device-list"></div>');renderOutputDevices();connect?.tick().catch(()=>{});}
-function renderOutputDevices(){const target=$('#output-device-list');if(!target)return;const model=JSON.stringify([Boolean(accountClient?.user),connect?.owner,connect?.online,connect?.devices]);if(target.dataset.model===model)return;target.dataset.model=model;target.innerHTML=accountClient?.user?`<p class="small-copy">Playing on ${esc(connect.owner===connect.id||!connect.owner?'this browser':connect.name)}${connect.remote&&!connect.online?' · unavailable':''}</p><div class="menu-list">${btn((connect.owner===connect.id||!connect.owner?'✓ ':'')+'This browser','select-output',`data-id="${esc(connect.id)}"`)}${connect.devices.filter(d=>d.id!==connect.id).map(d=>btn((d.id===connect.owner?'✓ ':'')+esc(d.name),'select-output',`data-id="${esc(d.id)}"`)).join('')}</div><p class="small-copy">Open Nova Music on another device signed into this account. Keep the browser open for playback. If audio is blocked, press Play in the output browser once.</p>`:`<p>Sign in to the same Nova Music account on both devices to connect playback.</p>${btn('Sign in','account')}`;}
+function renderOutputDevices(){const target=$('#output-device-list');if(!target)return;const model=JSON.stringify([Boolean(accountClient?.user),connect?.owner,connect?.online,connect?.devices]);if(target.dataset.model===model)return;target.dataset.model=model;target.innerHTML=accountClient?.user?`<p class="small-copy">Playing on ${esc(connect.owner===connect.id||!connect.owner?'this browser':connect.name)}${connect.remote&&!connect.online?' · unavailable':''}</p><div class="menu-list">${btn((connect.owner===connect.id||!connect.owner?'✓ ':'')+(window.novaDesktop?'This Mac':'This browser'),'select-output',`data-id="${esc(connect.id)}"`)}${connect.devices.filter(d=>d.id!==connect.id).map(d=>btn((d.id===connect.owner?'✓ ':'')+esc(d.name),'select-output',`data-id="${esc(d.id)}"`)).join('')}</div><p class="small-copy">Open Nova Music on another device signed into this account. Keep the browser open for playback. If audio is blocked, press Play in the output browser once.</p>`:`<p>Sign in to the same Nova Music account on both devices to connect playback.</p>${btn('Sign in','account')}`;}
 async function remotePlaybackAction(name,data){
  await connect.command(current=>{
   const next=structuredClone(current);next.position=snapshotPosition(current);
