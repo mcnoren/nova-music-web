@@ -5,16 +5,22 @@ import Security
 private let musicURL = URL(string: "https://mcnoren.github.io/nova-music-web/")!
 private let authKey = "nova-music-auth-session-v1"
 
-@MainActor
 private enum Credentials {
+    private static let queue = DispatchQueue(label:"com.nova.music.mac.credentials",qos:.userInitiated)
+    static func read() async -> String? {
+        await withCheckedContinuation { continuation in queue.async { continuation.resume(returning:readItem()) } }
+    }
+    static func save(_ value: String?) async -> Bool {
+        await withCheckedContinuation { continuation in queue.async { continuation.resume(returning:saveItem(value)) } }
+    }
     static var query: [String: Any] { [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"com.nova.music.mac.account",kSecAttrAccount as String:"session"] }
-    static func read() -> String? {
+    private static func readItem() -> String? {
         var query = query; query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary,&result) == errSecSuccess, let data = result as? Data else { return nil }
         return String(data:data,encoding:.utf8)
     }
-    static func save(_ value: String?) -> Bool {
+    private static func saveItem(_ value: String?) -> Bool {
         guard let value else { let status = SecItemDelete(query as CFDictionary); return status == errSecSuccess || status == errSecItemNotFound }
         guard value.utf8.count < 256_000, let data = value.data(using:.utf8),
               let session = try? JSONSerialization.jsonObject(with:data) as? [String:Any],
@@ -48,7 +54,7 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
         config.mediaTypesRequiringUserActionForPlayback = []
         config.preferences.isElementFullscreenEnabled = true
         config.userContentController.add(self,name:"novaDesktop")
-        installScripts(config,session:Credentials.read())
+        installScripts(config,session:nil)
         web = WKWebView(frame:.zero,configuration:config)
         web.navigationDelegate = self; web.uiDelegate = self
         web.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15 NovaMusicMac/1.0"
@@ -70,6 +76,9 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
             guard let rules = await HDYouTubeAdFilter.rules() else {
                 showError("Ad protection could not start. Try again before playing music."); return
             }
+            let savedSession = await Credentials.read()
+            guard !Task.isCancelled else { return }
+            installScripts(config,session:savedSession)
             config.userContentController.add(rules); rulesInstalled = true
             web.load(URLRequest(url:musicURL,cachePolicy:.reloadRevalidatingCacheData))
         }
@@ -97,8 +106,10 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
         guard message.frameInfo.isMainFrame, trusted(message.frameInfo.request.url), let value = message.body as? [String:Any], let type = value["type"] as? String else { return }
         if type == "session" {
             let session = value["value"] as? String
-            if Credentials.save(session) { installScripts(web.configuration,session:session) } else {
-                let alert = NSAlert(); alert.messageText = "Your sign-in could not be saved"; alert.informativeText = "Music can still play. You may need to sign in again after closing the app."; alert.beginSheetModal(for:window)
+            Task {
+                if await Credentials.save(session) { installScripts(web.configuration,session:session) } else {
+                    let alert = NSAlert(); alert.messageText = "Your sign-in could not be saved"; alert.informativeText = "Music can still play. You may need to sign in again after closing the app."; _ = await alert.beginSheetModal(for:window)
+                }
             }
         } else if type == "playback", let playing = value["playing"] as? Bool {
             playbackActivity.setPlaying(playing)
