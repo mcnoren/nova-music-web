@@ -8,8 +8,8 @@ import {defaultProfile, validateProfile, profileIcons, profileColors} from './pr
 import {parseLRC, lookupLyrics, lyricData as providerLyricData, activeLyric, normalizedLines, playbackSample, preferredAudio} from './lyrics.js?v=8ecae04bc17e';
 import {MusicSearchClient, rankLocal, mergeResults, normalizeSearch, rankSearch, providerItems} from './music-search.js?v=4098b6ac99a2';
 import {syncConfig} from './sync-config.js?v=ebe8169ae84b';
-import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=23e717fbce07';
-import {libraryValues, applyLibraryValues} from './sync-model.js?v=21cc42183c54';
+import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=b98686ee6edd';
+import {libraryValues, applyLibraryValues} from './sync-model.js?v=013a31f554e0';
 import {NovaConnect, snapshotPosition} from './connect.js?v=5fe39a74171c';
 let accountClient = null, connect = null, applyingConnectedPlayback = false, mirroredPlayback = null;
 const authReturn=parseAuthReturn(location.hash);
@@ -153,7 +153,12 @@ function rememberSearch(result){
  for(const p of result.playlists)publicPlaylists.set(p.id,p);
 }
 async function loadCollection(id,more=false){
- const old=collectionPages.get(id);if(old&&!more&&Date.now()-old.at<300000&&old.songs.every(s=>songs.has(s.id))&&(!id.startsWith('MPRE')||albums.has(id)))return old;
+ const old=collectionPages.get(id);if(old&&!more&&Date.now()-old.at<300000&&old.songs.every(s=>songs.has(s.id))&&(!id.startsWith('MPRE')||albums.has(id))){
+  // Rehydrate the open album from its provider page after account sync. The
+  // shared release record may contain metadata without any loaded recordings.
+  if(id.startsWith('MPRE')){const album={...albums.get(id),tracks:old.songs.map(s=>s.id),complete:!old.cursor,live:true};albums.set(id,album);state.extraAlbums[id]=album}
+  return old;
+ }
  const result=await musicSearch.request({op:'browse',id,...(more&&old?.cursor?{cursor:old.cursor}:{})});
  const meta=result.collection||{},album=id.startsWith('MPRE')?albums.get(id):null,playlist=publicPlaylists.get(id.slice(2));
  result.songs=result.songs.map((s,i)=>({...s,artist:s.artist==='YouTube Music'?(album?.artist||meta.artist||result.artist?.name||playlist?.author||s.artist):s.artist,artistId:s.artistId||album?.artistId||meta.artistId||(id.startsWith('UC')&&(!s.artistId||s.artist==='YouTube Music')?id:''),album:album?.title||(id.startsWith('MPRE')?meta.title:s.album),albumId:id.startsWith('MPRE')?id:s.albumId,artwork:s.artwork.includes('i.ytimg.com')?(album?.artwork||meta.artwork||s.artwork):s.artwork,trackNumber:(more?old?.songs.length||0:0)+i+1}));

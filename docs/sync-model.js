@@ -106,7 +106,10 @@ export function applyLibraryValues(state, values) {
   for (const album of list('album')) {
     if (!album || !validID(album.id) || typeof album.title !== 'string' || typeof album.artist !== 'string' || !Array.isArray(album.tracks) || !album.tracks.every(validID)) throw Error('A synced album is invalid.');
     if (album.artwork && !isImageURL(album.artwork)) delete album.artwork;
-    next.extraAlbums[album.id] = album;
+    const cached = next.extraAlbums[album.id];
+    // Account records carry release metadata; a freshly browsed provider page
+    // owns its loaded tracks, pagination and completeness on this device.
+    next.extraAlbums[album.id] = cached?.live ? {...cached, ...album, tracks:cached.tracks, complete:cached.complete, live:true} : album;
   }
   next.extraArtists ||= {};
   for (const artist of list('artist')) {

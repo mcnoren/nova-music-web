@@ -92,3 +92,12 @@ test('invalid custom playlist artwork is rejected before account state changes',
   values['playlist:'+A]={id:A,name:'Unsafe',songs:[],collectionArtwork};assert.throws(()=>applyLibraryValues(state,values),/Invalid playlist/);assert.deepEqual(state.playlists,[]);
  }
 });
+test('metadata-only album records cannot erase a loaded collection when playback sync reapplies the library',()=>{
+ const state=baseState(),second={...song,id:'lmnopqrstuv',title:'Second song'},album={id:'MPREselected',title:'Album',artist:'Artist',tracks:[song.id,second.id],complete:true,live:true};
+ state.albums=[album.id];state.releaseChoices.UCartist=[album.id];state.extraSongs={[song.id]:song,[second.id]:second};state.extraAlbums={[album.id]:album};state.playlists=[{id:A,name:'Playlist',songs:[song.id,second.id]}];
+ const incoming=libraryValues(state,{songs:[],albums:[],artists:[]});incoming['album:'+album.id]={...album,title:'Updated title',tracks:[],complete:false,live:false};
+ let next=state;
+ for(let i=0;i<3;i++)next=applyLibraryValues(next,incoming);
+ assert.deepEqual(next.extraAlbums[album.id].tracks,album.tracks);assert.equal(next.extraAlbums[album.id].complete,true);assert.equal(next.extraAlbums[album.id].live,true);assert.equal(next.extraAlbums[album.id].title,'Updated title');
+ assert.deepEqual(next.playlists[0].songs.map(id=>next.extraSongs[id].title),['Song','Second song']);
+});
