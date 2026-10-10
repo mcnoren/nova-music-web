@@ -157,8 +157,30 @@ export async function execute(input, request=musicRequest) {
   } else if(id.startsWith('UC')) {
     for(const node of walk(root)) {
       const header=node.musicImmersiveHeaderRenderer||node.musicVisualHeaderRenderer;
-      if(header){result.artist={id,name:text(header.title),artwork:image(header)};break;}
+      if(header){result.artist={id,name:text(header.title),artwork:image(header),description:text(header.description)};break;}
     }
+    const releases=[],more=[],related=[],featured=[];
+    let ranked=[];
+    for(const node of walk(root)){
+      if(node.musicShelfRenderer&&!ranked.length)ranked=parseCatalog(node.musicShelfRenderer).songs;
+      const shelf=node.musicCarouselShelfRenderer;if(!shelf)continue;
+      const header=shelf.header?.musicCarouselShelfBasicHeaderRenderer,title=text(header?.title).toLowerCase(),items=parseCatalog(shelf);
+      if(/album|single|eps/.test(title)){
+        const kind=/single|eps/.test(title)?'Single':'Album';
+        releases.push(...items.albums.map(album=>({...album,kind:album.type==='EP'?'EP':kind,artist:album.artist||result.artist?.name||'',artistId:id})));
+        for(const child of walk(header?.moreContentButton||{}))if(child.browseEndpoint){more.push({endpoint:child.browseEndpoint,kind});break;}
+      }else if(/fans|similar|also like/.test(title))related.push(...items.artists);
+      else if(/featured|playlist/.test(title))featured.push(...items.playlists);
+    }
+    const expanded=await Promise.allSettled(more.slice(0,2).map(async({endpoint,kind})=>{
+      const response=await request('browse',{browseId:endpoint.browseId,...(endpoint.params?{params:endpoint.params}:{})});
+      return parseCatalog(response).albums.map(album=>({...album,kind:album.type==='EP'?'EP':kind,artist:album.artist||result.artist?.name||'',artistId:id}));
+    }));
+    for(const page of expanded)if(page.status==='fulfilled')releases.push(...page.value);
+    result.discographyIncomplete=expanded.some(page=>page.status==='rejected');
+    if(releases.length)result.albums=[...new Map(releases.map(album=>[album.id,album])).values()];
+    if(ranked.length)result.songs=ranked;
+    result.related=related;result.featuredPlaylists=featured;
     result.cursor='';
 
   }

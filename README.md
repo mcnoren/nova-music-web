@@ -113,7 +113,7 @@ Validation includes 25 unit tests covering typo fallback, Unicode, available lyr
 
 ## Profiles, lyrics and search relevance (October 9, 2026)
 
-The account picture opens Account directly. Edit profile provides a name, twelve icons, six colors and an optional center-cropped 256-pixel JPEG photo. The shared `profile:main` record stays in the private account document, and the app and browser use the same format. A default profile on a new device does not replace an existing account picture. Imported audio and library artwork remain device-local.
+The account picture opens Account directly. Edit profile provides a name, twelve icons, six colors and an optional center-cropped 256-pixel JPEG photo. The shared `profile:main` record stays in the private account document, and the app and browser use the same format. A default profile on a new device does not replace an existing account picture. Playlist artwork now syncs between devices. Imported audio remains device-local.
 
 The website's Lyrics view uses the right sidebar with its view switcher fixed at the top. Highlighting follows the playback clock at 150 ms intervals, resets between songs and seeks, and scrolls only the lyric container. LRCLIB matches title, primary artist, recording version and duration before enabling timed cues; a plain exact response can fall back to a matching timed result. Playback-duration changes trigger a fresh match. Earlier/Later/Reset controls store a per-recording adjustment on the current device. Provider timing can still vary by recording. Song and album options use an anchored, keyboard-accessible menu; editing and account forms retain their dialogs.
 
@@ -162,3 +162,12 @@ Outputs reopen an expired session from matching telemetry, paused at the last co
 
 
 The update was also checked on the deployed GitHub Pages website in Safari with the updated app installed on the paired iPhone. The browser received the phone's actual song and duration, resumed playback on the phone from a browser Play action, showed continuously advancing progress, and displayed the phone's timed provider cues. The output picker continued to identify the iPhone as the selected output. This confirms the live foreground handoff; it does not establish background wake-up or identical timing under every network condition.
+
+
+## Artist pages and playlist artwork
+
+Mac and web artist pages follow the phone layout: artist image and controls, Albums, Singles & EPs, attached playlists, Top songs and artist information. The release picker includes synced metadata before its tracks have loaded, follows the provider’s full album/single shelves, and preserves explicit empty selections and disc choices. Chosen release playback includes featured performers.
+
+Playlist photos, icons and cover collages share a portable `collectionArtwork` field in the existing private playlist record. Photos use a bounded JPEG image; native clients recreate a local image file on import. Default artwork can be restored on either client. The constantly changing sync label was removed from the desktop sidebar; account status remains available in Account. Both clients need this update for custom artwork transfer.
+
+Validation: 94 web tests and eight native account/sync tests passed, including selected releases with unloaded tracks, separate release kinds, image transfer without native file references, artwork reset, and malformed-image rejection. The live metadata service returned the full Olivia Rodrigo discography. The updated signed phone build was installed on the paired iPhone.

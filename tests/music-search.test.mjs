@@ -102,3 +102,14 @@ test('linked YouTube Music lyric cues retain millisecond starts and ends only fo
  assert.equal(result.lyrics.lines[0].time,15.35);assert.equal(calls[1].timed,true);assert.equal(calls[1].body.browseId,'MPLYlinked');
  for(const input of [{op:'lyrics',id:'https://evil.test'},{op:'lyrics',id:'abcdefghijk',duration:-1},{op:'lyrics',id:'abcdefghijk',duration:1e10},{query:'hi',providerOrder:'yes'}])assert.throws(()=>validateRequest(input));
 });
+test('artist browse expands albums and singles separately without including related artists releases',async()=>{
+ const release=(id,title)=>({musicTwoRowItemRenderer:{title:{runs:[run(title,id)]},subtitle:{runs:[{text:'2026'}]},navigationEndpoint:{browseEndpoint:{browseId:id}}}});
+ const shelf=(title,items,more)=>({musicCarouselShelfRenderer:{header:{musicCarouselShelfBasicHeaderRenderer:{title:{simpleText:title},...(more?{moreContentButton:{buttonRenderer:{navigationEndpoint:{browseEndpoint:{browseId:more,params:'full'}}}}}:{})}},contents:items}});
+ const calls=[];const result=await execute({op:'browse',id:'UCartist'},async(endpoint,body)=>{
+  calls.push(body);
+  if(body.browseId==='albums')return{contents:[release('MPREfull','Full album')]};
+  if(body.browseId==='singles')return{contents:[release('MPREsingle','Single')]};
+  return{musicImmersiveHeaderRenderer:{title:{simpleText:'Artist'},description:{simpleText:'About artist'}},contents:[shelf('Albums',[release('MPREpreview','Preview')],'albums'),shelf('Singles & EPs',[],'singles'),shelf('Fans might also like',[release('MPREunrelated','Unrelated')])]};
+ });
+ assert.deepEqual(result.albums.map(a=>a.id),['MPREpreview','MPREfull','MPREsingle']);assert.equal(result.albums[2].kind,'Single');assert.ok(result.albums.every(a=>a.artistId==='UCartist'));assert.equal(result.artist.description,'About artist');assert.equal(calls[1].params,'full');
+});

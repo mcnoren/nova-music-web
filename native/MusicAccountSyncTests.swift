@@ -1,8 +1,59 @@
 import XCTest
+import UIKit
 @testable import NovaMusic
 
 @MainActor
 final class NovaMusicAccountSyncTests: XCTestCase {
+    func testPlaylistArtworkTransfersPhotoBytesWithoutNativeFileReferences() throws {
+        let suite="NovaMusic.ArtworkSync.\(UUID())",defaults=UserDefaults(suiteName:suite)!
+        defer{defaults.removePersistentDomain(forName:suite)}
+        let store=YouTubeStore(defaults:defaults,musicOnly:true);defer{store.close()}
+        let image=UIGraphicsImageRenderer(size:CGSize(width:24,height:24)).image { context in UIColor.red.setFill();context.fill(CGRect(x:0,y:0,width:24,height:24)) }
+        let data=try XCTUnwrap(image.jpegData(compressionQuality:0.8))
+        let filename=try MusicArtworkFiles.save(data),id=UUID(),key="playlist:\(id.uuidString.lowercased())"
+        defer{if let url=MusicArtworkFiles.url(filename){try? FileManager.default.removeItem(at:url)}}
+        var playlist=YouTubePlaylist(name:"Photo playlist");playlist.id=id;playlist.customArtwork = .init(style:.photo,photoFile:filename)
+        store.playlists=[playlist]
+        var values=try MusicAccountLibrary.values(store)
+        let shared=try XCTUnwrap(values[key]?["collectionArtwork"])
+        XCTAssertEqual(shared["style"]?.string,"photo");XCTAssertTrue(shared["image"]?.string?.hasPrefix("data:image/jpeg;base64,")==true)
+        XCTAssertNil(shared["photoFile"])
+        var record=try XCTUnwrap(values[key]?.object);record.removeValue(forKey:"native");values[key] = .object(record)
+        try MusicAccountLibrary.apply(values,to:store)
+        let imported=try XCTUnwrap(store.playlists.first?.customArtwork?.photoFile),url=try XCTUnwrap(MusicArtworkFiles.url(imported))
+        defer{try? FileManager.default.removeItem(at:url)}
+        XCTAssertNotNil(UIImage(contentsOfFile:url.path));XCTAssertNotEqual(imported,filename)
+        XCTAssertEqual(try MusicAccountLibrary.values(store,preserving:values)[key]?["collectionArtwork"],shared)
+        record["collectionArtwork"] = .object(["style":.string("icon"),"symbol":.string("heart.fill")]);values[key] = .object(record)
+        try MusicAccountLibrary.apply(values,to:store);XCTAssertEqual(store.playlists.first?.customArtwork?.symbol,"heart.fill")
+        record["collectionArtwork"] = .null;values[key] = .object(record)
+        try MusicAccountLibrary.apply(values,to:store);XCTAssertNil(store.playlists.first?.customArtwork)
+    }
+    func testChosenReleaseMetadataAndArtistPlaylistIdentitySurviveSync() throws {
+        let suite="NovaMusic.ReleaseArtworkSync.\(UUID())",defaults=UserDefaults(suiteName:suite)!
+        defer{defaults.removePersistentDomain(forName:suite)}
+        let store=YouTubeStore(defaults:defaults,musicOnly:true);defer{store.close()}
+        let artist=YouTubeChannel(id:"UCartist",name:"Artist",path:"/channel/UCartist")
+        let album=YouTubeMusicAlbum(id:"MPREchosen",title:"Chosen EP",artist:"Artist",artwork:nil,kind:"EP")
+        store.artistReleaseSelections[artist.id]=[album]
+        var playlist=YouTubePlaylist(name:"Artist playlist");playlist.artist=artist;playlist.customArtwork = .init(style:.collage);store.playlists=[playlist]
+        let values=try MusicAccountLibrary.values(store),key="playlist:\(playlist.id.uuidString.lowercased())"
+        XCTAssertEqual(values["album:MPREchosen"]?["artistId"]?.string,artist.id)
+        XCTAssertEqual(values[key]?["artistId"]?.string,artist.id)
+        XCTAssertNotNil(values["artist:UCartist"])
+        try MusicAccountLibrary.apply(values,to:store)
+        XCTAssertEqual(store.artistReleaseSelections[artist.id]?.first?.kind,"EP")
+        XCTAssertEqual(store.playlists.first?.artist?.id,artist.id);XCTAssertEqual(store.playlists.first?.customArtwork?.style,.collage)
+    }
+    func testMalformedSharedArtworkDoesNotReplaceTheLibrary() throws {
+        let suite="NovaMusic.InvalidArtwork.\(UUID())",defaults=UserDefaults(suiteName:suite)!
+        defer{defaults.removePersistentDomain(forName:suite)}
+        let store=YouTubeStore(defaults:defaults,musicOnly:true);defer{store.close()}
+        let playlist=YouTubePlaylist(name:"Keep me");store.playlists=[playlist]
+        var values=try MusicAccountLibrary.values(store),key="playlist:\(playlist.id.uuidString.lowercased())",record=values["playlist:\(playlist.id.uuidString.lowercased())"]!.object!
+        record["collectionArtwork"] = .object(["style":.string("photo"),"image":.string("file:///private/photo.jpg")]);values[key] = .object(record)
+        XCTAssertThrowsError(try MusicAccountLibrary.apply(values,to:store));XCTAssertEqual(store.playlists,[playlist])
+    }
     func testWebLibraryRoundTripAndPersistence() throws {
         let suite = "NovaMusic.SyncInterop.\(UUID())", defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }

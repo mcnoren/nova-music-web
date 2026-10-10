@@ -1,4 +1,6 @@
 import Foundation
+import UIKit
+import CryptoKit
 
 @MainActor
 enum MusicAccountLibrary {
@@ -23,15 +25,17 @@ enum MusicAccountLibrary {
         membership("savedAlbum",store.likedAlbums.map(\.id)); membership("followedArtist",store.sortedLibraryArtists.map(\.id))
         membership("artistPin",store.pinnedArtistIDs.sorted())
         let albums = store.likedAlbums + store.artistReleaseSelections.values.flatMap { $0 } + store.musicFolders.flatMap(\.albums)
+        let releaseArtists = Dictionary(store.artistReleaseSelections.flatMap { artist,releases in releases.map { ($0.id,artist) } },uniquingKeysWith:{ first,_ in first })
         for album in albums {
             var value = old["album:\(album.id)"]?.object ?? [:]
             value["id"] = .string(album.id); value["title"] = .string(album.title); value["artist"] = .string(album.artist)
             value["artwork"] = .string(album.artwork?.absoluteString ?? ""); value["kind"] = .string(album.kind)
+            if let artistID = releaseArtists[album.id] { value["artistId"] = .string(artistID) }
             value["year"] = album.year.map(NovaSyncValue.string) ?? .null; value["native"] = try .encoded(album)
             if value["tracks"] == nil { value["tracks"] = .array([]); value["complete"] = .bool(false) }
             result["album:\(album.id)"] = .object(value)
         }
-        for artist in store.followedArtists {
+        for artist in store.followedArtists + store.playlists.compactMap(\.artist) {
             var value = old["artist:\(artist.id)"]?.object ?? [:]
             value["id"] = .string(artist.id); value["name"] = .string(artist.name)
             value["artwork"] = .string(artist.avatar?.absoluteString ?? ""); value["native"] = try .encoded(artist)
@@ -43,6 +47,8 @@ enum MusicAccountLibrary {
             value["id"] = .string(id); value["name"] = .string(playlist.name); value["order"] = .number(Double(order))
             value["songs"] = .array(playlist.videos.map { .string($0.id) }); value["createdAt"] = .number(playlist.createdAt.timeIntervalSince1970 * 1000)
             value["artwork"] = .string(playlist.sourceArtwork?.absoluteString ?? ""); value["native"] = try .encoded(playlist)
+            value["collectionArtwork"] = try sharedArtwork(playlist.customArtwork)
+            value["artistId"] = .string(playlist.artist?.id ?? "")
             if let source = playlist.spotifySourceURL { value["sourceUrl"] = .string(source.absoluteString) }
             else if let source = playlist.youtubePlaylistID { value["sourceUrl"] = .string("https://www.youtube.com/playlist?list=\(source)") }
             if let unmatched = playlist.spotifyUnmatchedTracks {
@@ -122,7 +128,7 @@ enum MusicAccountLibrary {
         }
         for value in group("album") {
             guard let id = value["id"]?.string, let title = value["title"]?.string, let artist = value["artist"]?.string else { throw NovaSyncFailure.invalidDocument }
-            albums[id] = YouTubeMusicAlbum(id:id,title:title,artist:artist,artwork:imageURL(value["artwork"]?.string),kind:value["kind"]?.string ?? "Album",year:value["year"]?.string,releaseDate:value["native"]?["releaseDate"]?.string)
+            albums[id] = YouTubeMusicAlbum(id:id,title:title,artist:artist,artwork:imageURL(value["artwork"]?.string),kind:value["kind"]?.string ?? value["type"]?.string ?? "Album",year:value["year"]?.string,releaseDate:value["native"]?["releaseDate"]?.string)
         }
         for value in group("artist") {
             guard let id = value["id"]?.string, id.hasPrefix("UC"), let name = value["name"]?.string else { throw NovaSyncFailure.invalidDocument }
@@ -138,6 +144,8 @@ enum MusicAccountLibrary {
             guard created >= 0, created < 8_640_000_000_000_000 else { throw NovaSyncFailure.invalidDocument }
             playlist.createdAt = Date(timeIntervalSince1970:created / 1000)
             playlist.sourceArtwork = imageURL(value["artwork"]?.string)
+            if let artwork = value["collectionArtwork"] { playlist.customArtwork = try localArtwork(artwork) }
+            if let artistID = value["artistId"]?.string { playlist.artist = artistID.isEmpty ? nil : artists[artistID] ?? (playlist.artist?.id == artistID ? playlist.artist : nil) }
             if let unmatched = value["unmatched"]?.array {
                 playlist.spotifyUnmatchedTracks = try unmatched.enumerated().map { index,item in
                     guard let title = item["title"]?.string, let artist = item["artist"]?.string else { throw NovaSyncFailure.invalidDocument }
@@ -218,6 +226,40 @@ enum MusicAccountLibrary {
         store.defaults.set(store.saved.map(\.id),forKey:"youtube.savedIDs")
         store.defaults.set(store.discoverGenres,forKey:"music.discoverGenres")
         store.persistPlaylists(); store.persistMusicFolders(); store.persistArtistFolders()
+    }
+    private static let artworkSymbols = Set(["folder.fill","music.note","music.note.list","star.fill","heart.fill","sparkles","moon.fill","sun.max.fill","pianokeys","guitars.fill"])
+    private static func sharedArtwork(_ choice:MusicCollectionArtworkChoice?) throws -> NovaSyncValue {
+        guard let choice else { return .null }
+        if choice.style == .photo {
+            guard let filename=choice.photoFile,let url=MusicArtworkFiles.url(filename),let data=try? Data(contentsOf:url),let image=UIImage(data:data) else { throw YouTubeAPI.Failure(message:"Playlist artwork couldn't be read. Choose the photo again.") }
+            let jpeg:Data
+            if max(image.size.width,image.size.height)<=512 { jpeg=data }
+            else {
+                let scale=512/max(image.size.width,image.size.height),size=CGSize(width:image.size.width*scale,height:image.size.height*scale)
+                let format=UIGraphicsImageRendererFormat();format.scale=1;format.opaque=true
+                guard let resized=UIGraphicsImageRenderer(size:size,format:format).image(actions:{ _ in image.draw(in:CGRect(origin:.zero,size:size)) }).jpegData(compressionQuality:0.8) else { throw NovaSyncFailure.invalidDocument }
+                jpeg=resized
+            }
+            guard jpeg.count<=450000 else { throw YouTubeAPI.Failure(message:"Playlist artwork is too large to sync. Choose a smaller photo.") }
+            return .object(["style":.string("photo"),"image":.string("data:image/jpeg;base64,"+jpeg.base64EncodedString())])
+        }
+        if choice.style == .collage { return .object(["style":.string("collage")]) }
+        guard artworkSymbols.contains(choice.symbol) else { throw NovaSyncFailure.invalidDocument }
+        return .object(["style":.string("icon"),"symbol":.string(choice.symbol)])
+    }
+    private static func localArtwork(_ value:NovaSyncValue) throws -> MusicCollectionArtworkChoice? {
+        if value == .null { return nil }
+        guard let style=value["style"]?.string else { throw NovaSyncFailure.invalidDocument }
+        if style=="collage" { return .init(style:.collage) }
+        if style=="icon" {
+            guard let symbol=value["symbol"]?.string,artworkSymbols.contains(symbol) else { throw NovaSyncFailure.invalidDocument }
+            return .init(symbol:symbol)
+        }
+        guard style=="photo",let raw=value["image"]?.string,raw.count<=600000,raw.hasPrefix("data:image/jpeg;base64,"),let data=Data(base64Encoded:String(raw.dropFirst(23))),data.count<=450000,let image=UIImage(data:data),image.size.width>0,image.size.height>0,max(image.size.width,image.size.height)<=1024 else { throw NovaSyncFailure.invalidDocument }
+        let filename="sync-"+SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined()+".jpg"
+        guard let url=MusicArtworkFiles.url(filename) else { throw NovaSyncFailure.invalidDocument }
+        if !FileManager.default.fileExists(atPath:url.path) { try FileManager.default.createDirectory(at:MusicArtworkFiles.directory,withIntermediateDirectories:true);try data.write(to:url,options:.atomic) }
+        return .init(style:.photo,photoFile:filename)
     }
     private static func seconds(_ label: String?) -> Double { (label ?? "").split(separator:":").reduce(0) { $0 * 60 + (Double($1) ?? 0) } }
     private static func durationLabel(_ seconds: Double) -> String? { guard seconds.isFinite, seconds > 0, seconds < 604800 else { return nil }; return "\(Int(seconds)/60):\(String(format:"%02d",Int(seconds)%60))" }

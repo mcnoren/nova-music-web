@@ -306,7 +306,7 @@ struct MusicAccountSyncSection: View {
             }
             if working { ProgressView() }
             if let text = message ?? account.error { Text(text).font(.footnote).foregroundStyle(.secondary) }
-            Text("Sync includes library metadata. Your profile picture syncs too. Imported audio, library artwork and playback settings remain on their original device.").font(.footnote).foregroundStyle(.secondary)
+            Text("Sync includes your library, profile picture and playlist artwork. Imported audio and playback settings remain on their original device.").font(.footnote).foregroundStyle(.secondary)
         }
     }
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {

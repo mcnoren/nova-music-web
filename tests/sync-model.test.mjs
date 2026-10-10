@@ -78,3 +78,17 @@ test('malformed synced collection IDs and dangerous artwork are rejected or remo
  delete values['playlist:'+A];values['song:'+song.id].artwork='javascript:alert(1)';assert.equal(applyLibraryValues(state,values).extraSongs[song.id].artwork,undefined);
  assert.throws(()=>validateDocument({version:1,records:{'bad-key':{clock:1,actor:A,deleted:true}}}),/invalid/);
 });
+test('playlist photos, icons, collages and artist association survive a web round trip',()=>{
+ for(const collectionArtwork of [{style:'photo',image:'data:image/jpeg;base64,/9j/2Q=='},{style:'icon',symbol:'heart.fill'},{style:'collage'},null]){
+  const state=baseState();state.playlists=[{id:A,name:'Artwork',songs:[song.id],collectionArtwork,artistId:'UCartist'}];
+  const values=libraryValues(state,{songs:[song],albums:[],artists:[]}),next=applyLibraryValues(baseState(),values);
+  assert.deepEqual(next.playlists[0].collectionArtwork,collectionArtwork);assert.equal(next.playlists[0].artistId,'UCartist');
+  assert.deepEqual(libraryValues(next,{songs:[song],albums:[],artists:[]})['playlist:'+A].collectionArtwork,collectionArtwork);
+ }
+});
+test('invalid custom playlist artwork is rejected before account state changes',()=>{
+ const state=baseState(),values=libraryValues(state,{songs:[song],albums:[],artists:[]});
+ for(const collectionArtwork of [{style:'photo',image:'file:///private/photo.jpg'},{style:'icon',symbol:'<script>'},{style:'photo',image:'data:image/jpeg;base64,'+'A'.repeat(600001)}]){
+  values['playlist:'+A]={id:A,name:'Unsafe',songs:[],collectionArtwork};assert.throws(()=>applyLibraryValues(state,values),/Invalid playlist/);assert.deepEqual(state.playlists,[]);
+ }
+});

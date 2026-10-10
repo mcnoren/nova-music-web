@@ -1,3 +1,4 @@
+import {validateCollectionArtwork} from './collection-artwork.js?v=4aab16fb9b27';
 // The same record envelope is used by the website and iOS app.
 // Tombstones retain removals, so an offline device cannot resurrect old entries.
 import {validateProfile,defaultProfile} from './profile.js?v=45be314c1460';
@@ -63,7 +64,7 @@ export function libraryValues(state, catalog) {
     });
   }
   for (const [order, playlist] of (state.playlists || []).entries()) {
-    const copy = json(playlist); copy.order = order; copy.songs = (copy.songs || []).filter(remoteSong);
+    const copy = json(playlist); if(Object.hasOwn(copy,'collectionArtwork'))copy.collectionArtwork=validateCollectionArtwork(copy.collectionArtwork); copy.order = order; copy.songs = (copy.songs || []).filter(remoteSong);
     copy.songs.forEach(addSong);
     values['playlist:' + copy.id.toLowerCase()] = copy;
   }
@@ -79,7 +80,7 @@ export function libraryValues(state, catalog) {
     const copy = json(album); copy.tracks = (copy.tracks || []).filter(remoteSong); copy.tracks.forEach(addSong);
     values['album:' + id] = copy;
   }
-  for (const id of state.artists || []) if (knownArtists.has(id)) values['artist:' + id] = json(knownArtists.get(id));
+  for (const id of new Set([...(state.artists || []),...(state.playlists||[]).map(p=>Object.hasOwn(p,'artistId')?p.artistId:p.native?.artist?.id).filter(Boolean)])) if (knownArtists.has(id)) values['artist:' + id] = json(knownArtists.get(id));
   return values;
 }
 export function applyLibraryValues(state, values) {
@@ -116,6 +117,7 @@ export function applyLibraryValues(state, values) {
   next.playlists = list('playlist').sort((a,b)=>(a.order||0)-(b.order||0)).map(playlist => {
     if (!playlist || !actorPattern.test(playlist.id) || typeof playlist.name !== 'string' || !Array.isArray(playlist.songs) || !playlist.songs.every(validID)) throw Error('A synced playlist is invalid.');
     if (playlist.artwork && !isImageURL(playlist.artwork)) delete playlist.artwork;
+    if (Object.hasOwn(playlist,'collectionArtwork'))playlist.collectionArtwork=validateCollectionArtwork(playlist.collectionArtwork);
     const local = state.playlists?.find(item => item.id.toLowerCase() === playlist.id.toLowerCase());
     playlist.songs.push(...(local?.songs || []).filter(id => id.startsWith('local-')));
     return playlist;
