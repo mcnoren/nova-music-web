@@ -17,7 +17,7 @@ A browser adaptation of Nova Music’s Discover, Classical, and Library experien
 - A continuous player with play/pause, seeking, volume, queue editing, shuffle and repeat.
 - Exact-recording LRCLIB lyric lookup, synced LRC lyrics when duration agrees, custom lyrics and timing offset.
 - Artwork/lyrics display, song information, Wikipedia introductions with attribution, song sharing.
-- Spotify PKCE connection, complete paginated playlist import, snapshot/total checks, recording match review and persistent unmatched-song checklists.
+- Spotify PKCE connection, complete paginated playlist import, snapshot/total checks, Exportify CSV import, live per-song recording searches, match review and persistent unmatched-song checklists.
 - Pasted song-list import and complete playback of imported audio files saved in IndexedDB.
 - Library backup/restore, phone navigation, keyboard controls, installation manifest and offline app shell.
 - Progressive WebMCP tools for catalog search, library readback and playlist creation when the browser supports them.
@@ -37,7 +37,7 @@ This is a static GitHub Pages application, not an exact replacement for the nati
 
 Open **Settings** in the website.
 
-Live search is already connected to the existing Supabase project. No user setup is needed. An optional YouTube Data API key can still be used for additional Spotify/text-import matching; restrict it to the website and YouTube Data API. It stays in that browser and is never committed.
+Live search is already connected to the existing Supabase project. No user setup is needed. Playlist CSV and pasted song-list imports use the existing live search service for each entry; no Spotify connection or additional API key is required. An optional YouTube Data API key remains available for other explicit YouTube imports; restrict it to the website and YouTube Data API. It stays in that browser and is never committed.
 
 For Spotify, create an app in the Spotify developer dashboard and register exactly `https://mcnoren.github.io/nova-music-web/` as its redirect URI. Enter the public client ID in Settings, then choose Add music → Import from Spotify → Connect Spotify. No client secret is used; tokens and the PKCE verifier stay in session storage.
 
@@ -129,3 +129,11 @@ Website searches now request `providerOrder: true`: one public YouTube Music sea
 Lyrics first resolve the public YouTube Music lyric endpoint linked to the selected video ID. The service requests its timed lyric data and preserves millisecond start/end ranges and provider attribution. Only verified official song audio receives these timed cues. A music-video result plays a strictly matching official audio version when one is available; other video edits receive readable lyrics rather than studio timing. LRCLIB is a fallback for duration-matched song audio, not video edits. The website ignores the prior video's playback clock during transitions, re-fetches lyrics when a previously unknown duration becomes available, and clears highlighting between explicit cue ranges. Open tabs detect newer website files and offer Refresh without interrupting playback.
 
 Validation: 44 automated tests pass. Live service checks loaded 61 linked cues for the official `drop dead` audio and withheld those cues for its longer video edit. Browser checks verified source attribution, the resolved official audio ID, timed highlights at 65 seconds and after a backward seek to 15 seconds, and lyric-container-only scrolling. The actual song refused embedding in the local test browser; playback-clock checks used YouTube's public sample recording and controlled cues. Provider timing is not a guarantee of sample-accurate alignment for every recording.
+
+## Playlist CSV imports
+
+Choose **Add music → Import playlist CSV** on the website, or **Playlists → New → Import playlist / CSV → Import playlist CSV** in a rebuilt native app. Exportify column order is detected by headers. CSV parsing supports UTF-8 BOM, quoted commas and escaped quotes, multiline fields, CRLF, and comma/tab/semicolon separators. The whole file is read locally; only title/artist search queries leave the device. Up to 10,000 entries and 5 MB are supported. The import does not download Spotify audio or require the user's own Spotify developer app.
+
+The website previously searched only metadata already loaded in the browser unless an optional API key was configured. It now searches every supported entry with bounded concurrency, preserving original order and sharing repeated queries. CSV duration, explicitness and album metadata help rank recordings; ISRCs are preserved without claiming an ISRC match when the provider exposes none. Different editions and non-official sources require manual selection. Failed searches are distinguished from absent matches and can be retried. Cancelling aborts outstanding searches and prevents a stale review from opening. Nothing is added until the review is saved. Repeated recordings are saved once; all original entries and unmatched metadata are retained.
+
+CSV import uses the same existing provider interface as normal Nova search; it does not change or remove the provider-policy limitations documented above. The native app already performed live per-song searches; this update adds CSV selection and parsing to that flow.

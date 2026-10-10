@@ -86,7 +86,7 @@ export class MusicSearchClient {
       response=await this.fetcher(this.url,{method:'POST',headers:{'Content-Type':'application/json',...(this.publicKey?{apikey:this.publicKey}:{})},body:JSON.stringify(input),signal:controller.signal,cache:'no-store'});
       data=await response.json();
     }finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
-    if(!response.ok||data.error)throw Error(data.error||'Live music search is unavailable. Please retry.');
+    if(!response.ok||data.error){const error=Error(data.error||'Live music search is unavailable. Please retry.');error.status=response.status;if(response.status===429)error.retryAfterMs=Math.max(1000,Number(response.headers.get('Retry-After'))*1000||60000);throw error;}
     if(!['songs','albums','artists','playlists'].every(key=>Array.isArray(data[key])))throw Error('Music search returned an incomplete response. Please retry.');
     this.cache.set(key,{at:this.now(),data});while(this.cache.size>80)this.cache.delete(this.cache.keys().next().value);
     return structuredClone(data);
