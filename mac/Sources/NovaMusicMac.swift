@@ -44,6 +44,7 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
     private var rulesInstalled = false
     private var setupTask: Task<Void,Never>?
     private let playbackActivity = PlaybackActivity()
+    private let nativeAudio = NativeMusicAudio()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -57,6 +58,11 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
         installScripts(config,session:nil)
         web = WKWebView(frame:.zero,configuration:config)
         web.navigationDelegate = self; web.uiDelegate = self
+        nativeAudio.remoteAction = { [weak self] value in self?.command(value) }
+        nativeAudio.emit = { [weak self] value in
+            guard let self, let data = try? JSONSerialization.data(withJSONObject:value),let json = String(data:data,encoding:.utf8) else { return }
+            self.web.evaluateJavaScript("window.dispatchEvent(new CustomEvent('nova-native-audio',{detail:\(json)}))",completionHandler:nil)
+        }
         web.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15 NovaMusicMac/1.0"
         web.translatesAutoresizingMaskIntoConstraints = false
         window = NSWindow(contentRect:NSRect(x:0,y:0,width:1320,height:850),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
@@ -90,7 +96,7 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
         config.userContentController.addUserScript(WKUserScript(source:filter,injectionTime:.atDocumentStart,forMainFrameOnly:false))
         var bridge = """
         if(location.origin==='https://mcnoren.github.io' && location.pathname.startsWith('/nova-music-web/')) {
-          window.novaDesktop=Object.freeze({post:message=>window.webkit.messageHandlers.novaDesktop.postMessage(message)});
+          window.novaDesktop=Object.freeze({nativeAudio:true,post:message=>window.webkit.messageHandlers.novaDesktop.postMessage(message)});
         """
         if let saved = session, let data = try? JSONSerialization.data(withJSONObject:[saved]), let json = String(data:data,encoding:.utf8) {
             bridge += "if(!sessionStorage.getItem('\(authKey)'))sessionStorage.setItem('\(authKey)',\(json)[0]);"
@@ -104,7 +110,8 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
     }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, trusted(message.frameInfo.request.url), let value = message.body as? [String:Any], let type = value["type"] as? String else { return }
-        if type == "session" {
+        if type == "audio" { nativeAudio.handle(value)
+        } else if type == "session" {
             let session = value["value"] as? String
             Task {
                 if await Credentials.save(session) { installScripts(web.configuration,session:session) } else {
@@ -138,11 +145,11 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = parameters.allowsMultipleSelection; panel.canChooseDirectories = parameters.allowsDirectories
         panel.beginSheetModal(for:window) { response in completionHandler(response == .OK ? panel.urls : nil) }
     }
-    func applicationWillTerminate(_ notification: Notification) { playbackActivity.setPlaying(false) }
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { playbackActivity.setPlaying(false) }
+    func applicationWillTerminate(_ notification: Notification) { nativeAudio.stop();playbackActivity.setPlaying(false) }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { nativeAudio.stop();playbackActivity.setPlaying(false) }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading.stopAnimation(nil); loading.isHidden = true; message.isHidden = true; retry.isHidden = true }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if (error as NSError).code != NSURLErrorCancelled { showError("Nova Music could not connect. Check your connection and try again.") } }
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { playbackActivity.setPlaying(false); showError("The music window stopped. Reload to continue.") }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { nativeAudio.stop();playbackActivity.setPlaying(false); showError("The music window stopped. Reload to continue.") }
     private func showError(_ text: String) { loading.stopAnimation(nil); loading.isHidden = true; message.stringValue = text; message.isHidden = false; retry.isHidden = false }
     @objc private func reload() {
         if rulesInstalled { web.reloadFromOrigin() }

@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory(prefix='nova-music-mac-') as temporary:
     binaries = []
     for arch in ['arm64','x86_64']:
         binary = Path(temporary)/arch; binaries.append(str(binary))
-        subprocess.run(['xcrun','swiftc','-O','-swift-version','5','-target',arch+'-apple-macos14.0','-sdk',sdk,str(root/'Sources'/'NovaMusicMac.swift'),str(root/'Sources'/'HDYouTubeAdFilter.swift'),str(root/'Sources'/'PlaybackActivity.swift'),'-o',str(binary)],check=True)
+        subprocess.run(['xcrun','swiftc','-O','-swift-version','5','-target',arch+'-apple-macos14.0','-sdk',sdk,str(root/'Sources'/'NovaMusicMac.swift'),str(root/'Sources'/'HDYouTubeAdFilter.swift'),str(root/'Sources'/'PlaybackActivity.swift'),str(root/'Sources'/'NativeMusicAudio.swift'),'-o',str(binary)],check=True)
     subprocess.run(['xcrun','lipo','-create',*binaries,'-output',str(contents/'MacOS'/'NovaMusic')],check=True)
 shutil.copyfile(root.parent/'docs'/'assets'/'icon-512.png',contents/'Resources'/'icon-512.png')
 with tempfile.TemporaryDirectory(prefix='nova-music-icon-') as temporary:
@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='nova-music-icon-') as temporary:
             subprocess.run(['sips','-z',str(size*2),str(size*2),str(source),'--out',str(icons/('icon_'+str(size)+'x'+str(size)+'@2x.png'))],check=True,stdout=subprocess.DEVNULL)
     subprocess.run(['iconutil','-c','icns',str(icons),'-o',str(contents/'Resources'/'Music.icns')],check=True)
 with (contents/'Info.plist').open('wb') as f:
-    plistlib.dump({'CFBundleIdentifier':'com.nova.music.mac','CFBundleName':'Nova Music','CFBundleDisplayName':'Nova Music','CFBundleExecutable':'NovaMusic','CFBundleIconFile':'Music.icns','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.0.1','CFBundleVersion':'2','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'Nova Music'},f)
+    plistlib.dump({'CFBundleIdentifier':'com.nova.music.mac','CFBundleName':'Nova Music','CFBundleDisplayName':'Nova Music','CFBundleExecutable':'NovaMusic','CFBundleIconFile':'Music.icns','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.0.2','CFBundleVersion':'3','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'NSHumanReadableCopyright':'Nova Music'},f)
 subprocess.run(['xattr','-cr',str(app)],check=True)
 subprocess.run(['codesign','--force','--sign','-','--identifier','com.nova.music.mac',str(app)],check=True)
 if args.install:

@@ -39,3 +39,9 @@ test('position intent is optional for existing clients and rejects unsupported v
  assert.equal(Boolean(validSnapshot(s)),true);assert.equal(Boolean(validSnapshot({...s,positionIntent:'preserve'})),true);
  assert.equal(Boolean(validSnapshot({...s,positionIntent:'seek'})),true);assert.equal(Boolean(validSnapshot({...s,positionIntent:'estimate'})),false);
 });
+test('explicit seeks finish before the connected command is acknowledged',async()=>{
+ const f=fixture();let finishSeek,complete=false;
+ f.engine.seek=()=>new Promise(resolve=>{finishSeek=resolve});
+ const work=applyPlayerCommand({position:8,playing:true,positionIntent:'seek'},f.engine).then(()=>complete=true);
+ await Promise.resolve();assert.equal(complete,false);finishSeek();await work;assert.equal(complete,true);
+});

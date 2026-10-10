@@ -3,7 +3,7 @@
 export async function applyPlayerCommand(snapshot, engine) {
   if (engine.needsLoad) await engine.load(snapshot.position, snapshot.playing);
   else {
-    if (snapshot.positionIntent !== 'preserve') engine.seek(snapshot.position);
+    if (snapshot.positionIntent !== 'preserve') await engine.seek(snapshot.position);
     if (snapshot.playing && !engine.playing()) await engine.play();
   }
   if (!snapshot.playing) await engine.pause();
