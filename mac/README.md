@@ -20,7 +20,7 @@ The build is locally signed and installed at `~/Applications/Nova Music.app`. Bu
 - Full-screen lyrics enters the native window's full-screen mode and returns to its previous mode when closed. Playback continues in the selected output.
 - Native file picker supports music, playlist, and profile imports. External links open in the default browser.
 
-The Mac output has its own stable device identity. Sign into the same Nova Music account on Mac and phone, then choose **Mac · Nova Music** in Output Location. Handoffs require the current output to confirm its paused clock before the new output starts.
+The Mac output has its own stable device identity. Sign into the same Nova Music account on Mac and phone, then choose **Mac · Nova Music** in Output Location. Responsive outputs confirm their paused clock before the new output starts. If an output has closed, explicitly choosing another device recovers from the last confirmed position.
 
 ## Validation (2026-10-09)
 
@@ -30,3 +30,11 @@ The Mac output has its own stable device identity. Sign into the same Nova Music
 - Website deployment verified against the generated app version at the public Pages URL.
 
 Handoffs deliberately allow a brief loading pause while the destination prepares. They never advance the destination's requested position to compensate for network or preparation time.
+
+## Audio stability update (2026-10-10)
+
+Remote pause/resume and queue/mode changes now carry `positionIntent: preserve`. Previously every remote change sought the output to a controller's projected position, introducing jumps or rebuffering even when the user had not sought. Only explicit seeks and track selections reposition an already loaded recording. Initial loads and handoffs still use their exact requested position. The optional field remains compatible with older clients; update the phone app to send the new intent.
+
+The native Mac bridge now holds one `userInitiatedAllowingIdleSystemSleep` activity while this Mac is audibly playing. It releases on pause, remote output ownership, navigation, web-process termination, and application termination. This keeps background playback work responsive without disabling system sleep globally. Ad filtering is unchanged.
+
+Validation: 80 website tests, seven native playback tests (including the actual AVPlayer clock remaining at nine seconds when a controller sends a stale four-second transport position), and the Mac activity lifecycle test pass. Both Mac architectures build. Live playback, remote transport, and background progress are checked in the installed app during delivery.

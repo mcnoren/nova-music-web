@@ -37,6 +37,7 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
     private var lyricsEnteredFullscreen = false
     private var rulesInstalled = false
     private var setupTask: Task<Void,Never>?
+    private let playbackActivity = PlaybackActivity()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -99,6 +100,8 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
             if Credentials.save(session) { installScripts(web.configuration,session:session) } else {
                 let alert = NSAlert(); alert.messageText = "Your sign-in could not be saved"; alert.informativeText = "Music can still play. You may need to sign in again after closing the app."; alert.beginSheetModal(for:window)
             }
+        } else if type == "playback", let playing = value["playing"] as? Bool {
+            playbackActivity.setPlaying(playing)
         } else if type == "lyricsFullscreen", let enabled = value["enabled"] as? Bool {
             if enabled && !window.styleMask.contains(.fullScreen) { lyricsEnteredFullscreen = true; window.toggleFullScreen(nil) }
             else if !enabled && lyricsEnteredFullscreen && window.styleMask.contains(.fullScreen) { lyricsEnteredFullscreen = false; window.toggleFullScreen(nil) }
@@ -124,9 +127,11 @@ final class MusicApplication: NSObject, NSApplicationDelegate, WKNavigationDeleg
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = parameters.allowsMultipleSelection; panel.canChooseDirectories = parameters.allowsDirectories
         panel.beginSheetModal(for:window) { response in completionHandler(response == .OK ? panel.urls : nil) }
     }
+    func applicationWillTerminate(_ notification: Notification) { playbackActivity.setPlaying(false) }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { playbackActivity.setPlaying(false) }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loading.stopAnimation(nil); loading.isHidden = true; message.isHidden = true; retry.isHidden = true }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if (error as NSError).code != NSURLErrorCancelled { showError("Nova Music could not connect. Check your connection and try again.") } }
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { showError("The music window stopped. Reload to continue.") }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { playbackActivity.setPlaying(false); showError("The music window stopped. Reload to continue.") }
     private func showError(_ text: String) { loading.stopAnimation(nil); loading.isHidden = true; message.stringValue = text; message.isHidden = false; retry.isHidden = false }
     @objc private func reload() {
         if rulesInstalled { web.reloadFromOrigin() }

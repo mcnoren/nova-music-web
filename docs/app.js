@@ -1,3 +1,4 @@
+import {applyPlayerCommand} from './connected-player.js?v=2ab5bacdb88d';
 import {parsePlaylistCSV, parseSongList, matchPlaylist, playlistReviewEntries, unmatchedKey, pairPlaylistEntry} from './playlist-import.js?v=078a6692de98';
 import {defaultProfile, validateProfile, profileIcons, profileColors} from './profile.js?v=45be314c1460';
 import {parseLRC, lookupLyrics, lyricData as providerLyricData, activeLyric, normalizedLines, playbackSample, preferredAudio} from './lyrics.js?v=8ecae04bc17e';
@@ -5,7 +6,7 @@ import {MusicSearchClient, rankLocal, mergeResults, normalizeSearch, rankSearch,
 import {syncConfig} from './sync-config.js?v=ebe8169ae84b';
 import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=5aae2e53ced1';
 import {libraryValues, applyLibraryValues} from './sync-model.js?v=57b8b9d3a790';
-import {NovaConnect, snapshotPosition} from './connect.js?v=230f3ff4a397';
+import {NovaConnect, snapshotPosition} from './connect.js?v=5fe39a74171c';
 let accountClient = null, connect = null, applyingConnectedPlayback = false, mirroredPlayback = null;
 const authReturn=parseAuthReturn(location.hash);
 if(authReturn)history.replaceState(null,'',location.pathname+location.search);
@@ -355,13 +356,13 @@ async function playCurrent(startAt=0,shouldPlay=true){
  }
  updateMediaSession();loadLyrics(s);renderPanel();$$('[data-song-row]').forEach(row=>row.classList.toggle('playing',row.dataset.songRow===s.id));
 }
-function setPlaying(value){const changed=playing!==value;playing=value;if(changed)connect?.publishStatus();updateTransportButtons();if(navigator.mediaSession)navigator.mediaSession.playbackState=value?'playing':'paused'}
+function setPlaying(value){const changed=playing!==value;playing=value;reportDesktopPlayback();if(changed)connect?.publishStatus();updateTransportButtons();if(navigator.mediaSession)navigator.mediaSession.playbackState=value?'playing':'paused'}
 async function togglePlay(){if(connect?.remote && !applyingConnectedPlayback){await connect.setPlayingIntent(!(connect.pendingPlaying ?? playing));return;}if(!current){toast('Choose a song to start listening.');return}if(current.source==='youtube'){if(playing){yt?.pauseVideo();setPlaying(false)}else{const p=await ensureYouTube();p.playVideo()}}else if(playing)audio.pause();else await audio.play()}
 async function nextSong(ended=false){if(connect?.remote && !applyingConnectedPlayback){if(!ended)await remotePlaybackAction('next',{});return;}if(!queue.length)return;if(ended&&repeat===2){seekTo(0);if(current.source==='youtube')yt.playVideo();else audio.play();return}if(shuffle&&queue.length>1){const choices=queue.map((_,i)=>i).filter(i=>i!==queueIndex);queueIndex=choices[Math.floor(Math.random()*choices.length)]}else if(queueIndex+1<queue.length)queueIndex++;else if(repeat===1)queueIndex=0;else{if(!ended){if(current?.source==='youtube')yt?.pauseVideo();else audio.pause();toast('You’re at the end of the queue.')}setPlaying(false);return}await playCurrent()}
 function samplePlayback(){if(connect?.remote && mirroredPlayback)return {position:snapshotPosition(mirroredPlayback),duration:mirroredPlayback.queue[mirroredPlayback.index]?.duration||0,confirmed:true};return playbackSample(current,yt,audio,youtubeClockId)}
 function position(){return connect?.remote && mirroredPlayback?snapshotPosition(mirroredPlayback):samplePlayback().position}
 function duration(){return connect?.remote && mirroredPlayback?mirroredPlayback.queue[mirroredPlayback.index]?.duration||0:samplePlayback().duration}
-function seekTo(seconds){if(connect?.remote && !applyingConnectedPlayback){connect.command(s=>({...s,position:Math.max(0,Number(seconds)||0)})).catch(e=>toast(e.message));return;}seconds=Math.max(0,Math.min(Number(seconds)||0,duration()));if(current?.source==='youtube')yt?.seekTo?.(seconds,true);else if(current)audio.currentTime=seconds;tick();connect?.publishStatus()}
+function seekTo(seconds){if(connect?.remote && !applyingConnectedPlayback){connect.command(s=>({...s,position:Math.max(0,Number(seconds)||0),positionIntent:'seek'})).catch(e=>toast(e.message));return;}seconds=Math.max(0,Math.min(Number(seconds)||0,duration()));if(current?.source==='youtube')yt?.seekTo?.(seconds,true);else if(current)audio.currentTime=seconds;tick();connect?.publishStatus()}
 function updateMediaSession(){if(!navigator.mediaSession||!current)return;try{navigator.mediaSession.metadata=new MediaMetadata({title:current.title,artist:current.artist,album:current.album||'',artwork:current.artwork?[{src:current.artwork}]:[]});for(const[name,fn]of Object.entries({play:()=>{if(!playing)togglePlay()},pause:()=>{if(playing)togglePlay()},previoustrack:()=>action('previous',{}),nexttrack:()=>nextSong(),seekto:e=>seekTo(e.seekTime),seekbackward:e=>seekTo(position()-(e.seekOffset||10)),seekforward:e=>seekTo(position()+(e.seekOffset||10))}))try{navigator.mediaSession.setActionHandler(name,fn)}catch{}}catch{}}
 function openPanel(tab='song'){panelTab=tab;$('#player-panel').hidden=false;renderPanel()}
 function renderPanel(){
@@ -685,15 +686,17 @@ async function applyConnectedPlayback(snapshot){
   if(!selected){stopConnectedPlayback();queue=[];queueIndex=-1;current=null;$('#current-song').innerHTML='Choose a song';renderPanel();return;}
   const needsLoad=wasRemote||current?.id!==selected.id;
   remember(snapshot.queue);queue=snapshot.queue.map(s=>s.id);queueIndex=snapshot.index;shuffle=snapshot.shuffle;repeat=snapshot.repeat;
-  if(needsLoad)await playCurrent(snapshot.position,snapshot.playing);else {seekTo(snapshot.position);if(snapshot.playing&&!playing)await togglePlay();}
-  if(!snapshot.playing){
-   if(current?.source==='youtube'){
-    yt?.pauseVideo?.();const deadline=Date.now()+5000;
-    while([1,3].includes(yt?.getPlayerState?.()) && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,25));
-    if([1,3].includes(yt?.getPlayerState?.()))throw Error('The output could not pause. Choose another output location.');
-   }else audio.pause();
-   setPlaying(false);
-  }
+  await applyPlayerCommand(snapshot,{
+   needsLoad, load:playCurrent, seek:seekTo, playing:()=>playing, play:togglePlay,
+   pause:async()=>{
+    if(current?.source==='youtube'){
+     yt?.pauseVideo?.();const deadline=Date.now()+5000;
+     while([1,3].includes(yt?.getPlayerState?.()) && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,25));
+     if([1,3].includes(yt?.getPlayerState?.()))throw Error('The output could not pause. Choose another output location.');
+    }else audio.pause();
+    setPlaying(false);
+   }
+  });
   renderPanel();updateOutputButton();
  }finally{applyingConnectedPlayback=false;}
 }
@@ -706,12 +709,13 @@ function mirrorConnectedPlayback(snapshot){
  if(panelChanged)renderPanel();tick();
 }
 function updateTransportButtons(){const pending=connect?.pendingPlaying;const intent=pending ?? playing;for(const b of $$('[data-action="toggle-play"]')){b.innerHTML=icon(intent?'pause':'play')+(pending!=null?'<span class="transport-spinner" aria-hidden="true"></span>':'');b.setAttribute('aria-label',intent?'Pause':'Play');b.setAttribute('aria-busy',String(pending!=null));b.classList.toggle('transport-pending',pending!=null);}}
-function updateOutputButton(){updateTransportButtons();for(const button of $$('[data-action="output-location"]')){button.classList.toggle('active',Boolean(connect?.remote));button.setAttribute('aria-label','Output location: '+(connect?.remote?connect.name:window.novaDesktop?'This Mac':'This browser'));button.title=connect?.remote?'Playing on '+connect.name:'Output location';}if($('#output-device-list'))renderOutputDevices();}
+function reportDesktopPlayback(){window.novaDesktop?.post({type:'playback',playing:Boolean(playing&&!connect?.remote)});}
+function updateOutputButton(){reportDesktopPlayback();updateTransportButtons();for(const button of $$('[data-action="output-location"]')){button.classList.toggle('active',Boolean(connect?.remote));button.setAttribute('aria-label','Output location: '+(connect?.remote?connect.name:window.novaDesktop?'This Mac':'This browser'));button.title=connect?.remote?'Playing on '+connect.name:'Output location';}if($('#output-device-list'))renderOutputDevices();}
 function outputLocation(){modal('Output location','<div id="output-device-list"></div>');renderOutputDevices();connect?.tick().catch(()=>{});}
 function renderOutputDevices(){const target=$('#output-device-list');if(!target)return;const model=JSON.stringify([Boolean(accountClient?.user),connect?.owner,connect?.online,connect?.devices]);if(target.dataset.model===model)return;target.dataset.model=model;target.innerHTML=accountClient?.user?`<p class="small-copy">Playing on ${esc(connect.owner===connect.id||!connect.owner?'this browser':connect.name)}${connect.remote&&!connect.online?' · unavailable':''}</p><div class="menu-list">${btn((window.novaDesktop?'This Mac':'This browser')+(connect.owner===connect.id||!connect.owner?' <span aria-label="Selected">✓</span>':''),'select-output',`data-id="${esc(connect.id)}"`)}${connect.remote&&!connect.online?'<p class="small-copy">'+esc(connect.name)+' · unavailable ✓</p>':''}${connect.devices.filter(d=>d.id!==connect.id).map(d=>btn(esc(d.name)+(d.id===connect.owner?' <span aria-label="Selected">✓</span>':''),'select-output',`data-id="${esc(d.id)}"`)).join('')}</div><p class="small-copy">Open Nova Music on another device signed into this account. Keep the browser open for playback. If audio is blocked, press Play in the output browser once.</p>`:`<p>Sign in to the same Nova Music account on both devices to connect playback.</p>${btn('Sign in','account')}`;}
 async function remotePlaybackAction(name,data){
  await connect.command(current=>{
-  const next=structuredClone(current);next.position=snapshotPosition(current);
+  const next=structuredClone(current);next.position=snapshotPosition(current);next.positionIntent=['next','previous','queue-play'].includes(name)?'seek':'preserve';
   if(name==='next'){if(next.index+1<next.queue.length){next.index++;next.position=0;next.playing=true}else if(next.repeat===1){next.index=0;next.position=0}}
   if(name==='previous'){if(next.position>3)next.position=0;else{next.index=Math.max(0,next.index-1);next.position=0}}
   if(name==='shuffle')next.shuffle=!next.shuffle;

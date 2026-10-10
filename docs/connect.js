@@ -15,7 +15,7 @@ export function validSnapshot(value) {
     Number.isInteger(value.index) && (value.queue.length ? value.index >= 0 && value.index < value.queue.length : value.index === 0) &&
     Number.isFinite(value.position) && value.position >= 0 && typeof value.playing === 'boolean' &&
     typeof value.shuffle === 'boolean' && [0,1,2].includes(value.repeat) &&
-    (value.at==null || Number.isFinite(value.at)) && (value.handoff==null || typeof value.handoff==='string' && /^[a-f0-9-]{36}$/i.test(value.handoff)) && (value.lyrics==null || validConnectedLyrics(value.lyrics));
+    (value.positionIntent==null || ['preserve','seek'].includes(value.positionIntent)) && (value.at==null || Number.isFinite(value.at)) && (value.handoff==null || typeof value.handoff==='string' && /^[a-f0-9-]{36}$/i.test(value.handoff)) && (value.lyrics==null || validConnectedLyrics(value.lyrics));
 }
 export function snapshotPosition(snapshot, now = Date.now()) {
   const age=now-(snapshot.at ?? now);
@@ -54,7 +54,7 @@ export class NovaConnect {
     clearTimeout(this.intentTimer);
     this.intentTimer=setTimeout(()=>{if(this.intent===intent){this.intent=null;this.options.changed?.();this.options.error?.('The output did not respond. Choose another output location.');}},15000);
     return this.enqueue(async generation=>{
-      try{const session=await this.send(s=>({...s,position:snapshotPosition(s),playing}),undefined,generation);if(this.intent===intent){intent.command=session.command;this.settleIntent();}}
+      try{const session=await this.send(s=>({...s,position:snapshotPosition(s),positionIntent:'preserve',playing}),undefined,generation);if(this.intent===intent){intent.command=session.command;this.settleIntent();}}
       catch(error){if(this.intent===intent){this.intent=null;clearTimeout(this.intentTimer);this.options.changed?.();}throw error;}
     });
   }

@@ -531,8 +531,8 @@ extension MusicAccountSync {
         else { player.shuffled = snapshot.shuffle }
         player.repeatMode = snapshot.repeat == 0 ? .off : snapshot.repeat == 1 ? .all : .one
         if let lyrics = snapshot.lyrics, lyrics.songID == song.id { player.lyricCalibration = LyricCalibration(offset:lyrics.offset,rate:lyrics.rate) }
-        player.seek(to:snapshot.position)
-        if snapshot.playing { player.play() } else { player.pause() }
+        if needsLoad || snapshot.positionIntent != "preserve" { player.seek(to:snapshot.position) }
+        if snapshot.playing { if !player.intendsPlayback { player.play() } } else { player.pause() }
     }
     private func publishConnectionStatus() {
         guard preparingCommand == nil, let session = connectedSession, session.owner == deviceID, session.command == appliedCommand else { return }
@@ -669,15 +669,17 @@ extension MusicAccountSync {
         }
         let known = store?.player.musicTracks ?? [:]
         sendPlayback(intentID:intentID) { current in
-            var next = current; next.position = current.advancedPosition()
+            var next = current; next.position = current.advancedPosition(); next.positionIntent = "preserve"
             switch action {
             case .play: next.playing = true
             case .pause: next.playing = false
-            case .seek(let position): if position.isFinite { next.position = max(0,position) }
+            case .seek(let position): if position.isFinite { next.position = max(0,position); next.positionIntent = "seek" }
             case .next:
+                next.positionIntent = "seek"
                 if next.index + 1 < next.queue.count { next.index += 1; next.position = 0; next.playing = true }
                 else if next.repeat == 1 { next.index = 0; next.position = 0 }
             case .previous:
+                next.positionIntent = "seek"
                 if next.position > 3 { next.position = 0 } else { next.index = max(0,next.index - 1); next.position = 0 }
             case .shuffle: next.shuffle.toggle()
             case .repeatMode: next.repeat = (next.repeat + 1) % 3
@@ -691,7 +693,7 @@ extension MusicAccountSync {
             case .move(let offsets,let destination):
                 var tail = Array(next.queue.dropFirst(next.index + 1))
                 if offsets.allSatisfy({ tail.indices.contains($0) }) && (0...tail.count).contains(destination) { tail.move(fromOffsets:offsets,toOffset:destination); next.queue = Array(next.queue.prefix(next.index + 1)) + tail }
-            case .entry(let index): if next.queue.indices.contains(index) { next.index = index; next.position = 0; next.playing = true }
+            case .entry(let index): if next.queue.indices.contains(index) { next.positionIntent = "seek"; next.index = index; next.position = 0; next.playing = true }
             }
             return next
         }

@@ -168,7 +168,7 @@ test('remote play and pause show intent immediately and wait for matching actual
  const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
  await mac.connect.command({...snapshot(),playing:false});await mac.account.sync();await phone.connect.tick();
  const play=phone.connect.setPlayingIntent(true);assert.equal(phone.connect.pendingPlaying,true);assert.equal(phone.connect.snapshot.playing,false);
- await play;assert.equal(phone.connect.pendingPlaying,true);assert.equal(phone.connect.snapshot.playing,false);
+ await play;assert.equal(env.remote[SESSION_KEY].snapshot.positionIntent,'preserve');assert.equal(phone.connect.pendingPlaying,true);assert.equal(phone.connect.snapshot.playing,false);
  await mac.connect.tick();await mac.account.sync();await phone.connect.tick();assert.equal(phone.connect.pendingPlaying,null);assert.equal(phone.connect.snapshot.playing,true);
  const pause=phone.connect.setPlayingIntent(false);assert.equal(phone.connect.pendingPlaying,false);await pause;assert.equal(phone.connect.pendingPlaying,false);
  await mac.connect.tick();await mac.account.sync();await phone.connect.tick();assert.equal(phone.connect.pendingPlaying,null);assert.equal(phone.connect.snapshot.playing,false);

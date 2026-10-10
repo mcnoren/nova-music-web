@@ -164,10 +164,11 @@ struct MusicConnectedSnapshot: Codable, Equatable {
     var owner: String? = nil, command: String? = nil
     var lyrics: MusicConnectedLyrics? = nil
     var handoff: String? = nil
+    var positionIntent: String? = nil
     var valid: Bool {
         queue.count <= 1000 && queue.allSatisfy { YouTubeLink.validID($0.id) && $0.source == "youtube" } &&
         (queue.isEmpty ? index == 0 : queue.indices.contains(index)) && position.isFinite && position >= 0 && (0...2).contains(`repeat`) &&
-        (at?.isFinite ?? true) && (lyrics?.valid ?? true) && (handoff == nil || UUID(uuidString:handoff!) != nil)
+        (positionIntent == nil || ["preserve","seek"].contains(positionIntent!)) && (at?.isFinite ?? true) && (lyrics?.valid ?? true) && (handoff == nil || UUID(uuidString:handoff!) != nil)
     }
     func advancedPosition(now: Double = Date().timeIntervalSince1970 * 1000) -> Double {
         let age = now - (at ?? now)
