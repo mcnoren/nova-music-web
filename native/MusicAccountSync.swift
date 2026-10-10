@@ -454,7 +454,8 @@ extension MusicAccountSync {
         outputDevices = document.values.filter { $0.key.hasPrefix("connect:device.") }.compactMap { try? $0.value.decoded(MusicConnectedDevice.self) }.filter { $0.online && UUID(uuidString:$0.id) != nil }.sorted { $0.name < $1.name }
         let session = connectedSession
         outputID = session?.owner
-        outputName = outputID == nil || outputID == deviceID ? "This device" : outputDevices.first { $0.id == outputID }?.name ?? "Unavailable device"
+        let selectedDevice = outputID.flatMap { try? document.values["connect:device." + $0]?.decoded(MusicConnectedDevice.self) }
+        outputName = outputID == nil || outputID == deviceID ? "This device" : selectedDevice?.name ?? "Unavailable device"
         let isOutput = session?.owner == deviceID
         if wasOutput && !isOutput || controlsRemoteOutput && !remoteMirroring {
             applyingPlayback = true; store.player.stop(); applyingPlayback = false

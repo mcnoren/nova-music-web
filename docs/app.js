@@ -5,7 +5,7 @@ import {MusicSearchClient, rankLocal, mergeResults, normalizeSearch, rankSearch,
 import {syncConfig} from './sync-config.js?v=ebe8169ae84b';
 import {NovaSyncClient, accountLibraryKey, parseAuthReturn} from './sync-client.js?v=5aae2e53ced1';
 import {libraryValues, applyLibraryValues} from './sync-model.js?v=57b8b9d3a790';
-import {NovaConnect, snapshotPosition} from './connect.js?v=1b2a64122885';
+import {NovaConnect, snapshotPosition} from './connect.js?v=230f3ff4a397';
 let accountClient = null, connect = null, applyingConnectedPlayback = false, mirroredPlayback = null;
 const authReturn=parseAuthReturn(location.hash);
 if(authReturn)history.replaceState(null,'',location.pathname+location.search);

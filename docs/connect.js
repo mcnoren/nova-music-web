@@ -35,7 +35,7 @@ export class NovaConnect {
   get owner() { return this.session?.owner; }
   get remote() { return Boolean(this.account.user && this.owner && this.owner !== this.id); }
   get online() { return this.devices.some(d=>d.id === this.owner); }
-  get name() { return this.devices.find(d=>d.id === this.owner)?.name || 'Unavailable device'; }
+  get name() { const device=this.values['connect:device.'+this.owner];return typeof device?.name==='string'?device.name:'Unavailable device'; }
   get snapshot() {
     const status=this.values[STATUS_KEY], session=this.session;
     const confirmed=session && status?.owner === session.owner && status?.command === session.command && validSnapshot(status);

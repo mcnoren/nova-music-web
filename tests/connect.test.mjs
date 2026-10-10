@@ -162,7 +162,7 @@ test('explicitly choosing this device recovers from an expired browser heartbeat
  const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
  await mac.connect.command({...snapshot([song(),song('lmnopqrstuv')],1),position:48,playing:false});await mac.account.sync();
  mac.account.setConnectValues({['connect:device.'+mac.connect.id]:{id:mac.connect.id,name:'Mac',at:Date.now()-100000}});await mac.account.sync();await phone.connect.tick();
- await phone.connect.transfer(phone.connect.id);assert.equal(phone.local.position,48);assert.equal(phone.local.index,1);assert.equal(phone.local.playing,false);
+ assert.equal(phone.connect.name,'Mac');await phone.connect.transfer(phone.connect.id);assert.equal(phone.local.position,48);assert.equal(phone.local.index,1);assert.equal(phone.local.playing,false);
 });
 test('remote play and pause show intent immediately and wait for matching actual telemetry',async t=>{
  const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
