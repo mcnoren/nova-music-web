@@ -26,7 +26,7 @@ The Mac output has its own stable device identity. Sign into the same Nova Music
 
 - Universal Mac app built and locally signature verified; launched on the user's Mac. Live YouTube Music search and playback succeeded with content rules installed. Native Command–L opened full-screen lyrics, timed highlighting followed playback, and Pause/Close returned to the shared interface.
 - 71 website tests pass, including delayed song starts at zero, confirmed handoff positions, queue duplicates/order/modes, timeout without estimating a position, and cancellation when another device selects a newer song.
-- Nine native connection/account tests pass, including a four-second-old new-song command with an additional 600 ms stream-loading delay starting at zero. Updated signed iPhone app installed on the paired iPhone.
+- Ten native connection/account tests pass, including a four-second-old new-song command with an additional 600 ms stream-loading delay starting at zero. The freeze check also verifies that projected UI progress cannot move the actual audio clock. Updated signed iPhone app installed on the paired iPhone.
 - Website deployment verified against the generated app version at the public Pages URL.
 
 Handoffs deliberately allow a brief loading pause while the destination prepares. They never advance the destination's requested position to compensate for network or preparation time.
