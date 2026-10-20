@@ -1,14 +1,17 @@
 import Foundation
 import AVFoundation
+import MediaPlayer
 
 private final class ResolverResponseProtocol: URLProtocol, @unchecked Sendable {
  static var fixture=Data()
+ static var alternateFixture:Data?
  override class func canInit(with request:URLRequest)->Bool { true }
  override class func canonicalRequest(for request:URLRequest)->URLRequest { request }
  override func startLoading() {
   let response=HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:"HTTP/1.1",headerFields:["Content-Type":"application/json"])!
   client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-  client?.urlProtocol(self,didLoad:Self.fixture)
+  let alternate = URLComponents(url:request.url!,resolvingAgainstBaseURL:false)?.queryItems?.first { $0.name == "client" }?.value == "ANDROID"
+  client?.urlProtocol(self,didLoad:alternate ? (Self.alternateFixture ?? Self.fixture) : Self.fixture)
   client?.urlProtocolDidFinishLoading(self)
  }
  override func stopLoading() {}
@@ -30,7 +33,10 @@ private final class ResolverResponseProtocol: URLProtocol, @unchecked Sendable {
   let bytes:UInt32=44100*2*40
   text("RIFF");u32(bytes+36);text("WAVEfmt ");u32(16);u16(1);u16(1);u32(44100);u32(88200);u16(2);u16(16);text("data");u32(bytes);wav.append(Data(count:Int(bytes)))
   try wav.write(to:file);defer{try? FileManager.default.removeItem(at:file)}
-  let audio=NativeMusicAudio(prepareItem:{ _ in AVPlayerItem(url:file) })
+  let artConfiguration=URLSessionConfiguration.ephemeral;artConfiguration.protocolClasses=[ResolverResponseProtocol.self]
+  let artSession=URLSession(configuration:artConfiguration);defer { artSession.invalidateAndCancel() }
+  ResolverResponseProtocol.fixture=Data(base64Encoded:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9WQAAAAASUVORK5CYII=")!
+  let audio=NativeMusicAudio(prepareItem:{ _ in AVPlayerItem(url:file) },artworkSession:artSession)
   var replies:[String:[String:Any]]=[:]
   audio.emit={value in if let id=value["request"] as? String { replies[id]=value } }
   let generation=UUID().uuidString
@@ -43,7 +49,11 @@ private final class ResolverResponseProtocol: URLProtocol, @unchecked Sendable {
    throw MacAudioError(message:"Test timed out")
   }
   func near(_ expected:Double,_ tolerance:Double=0.08){let actual=audio.player.currentTime().seconds;precondition(abs(actual-expected)<tolerance,"Expected \(expected), got \(actual)")}
-  let load=command("load",["videoId":"abcdefghijk","position":9.0,"playing":false,"volume":0.0]);try await wait(load)
+  let load=command("load",["videoId":"abcdefghijk","position":9.0,"playing":false,"volume":0.0,"title":"Track","artist":"Artist","album":"Album","artwork":"https://example.com/cover.png"]);try await wait(load)
+  for _ in 0..<100 { if MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyArtwork] != nil { break };try await Task.sleep(for:.milliseconds(10)) }
+  precondition(MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyArtwork] is MPMediaItemArtwork)
+  precondition(MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyAlbumTitle] as? String == "Album")
+  print("PASS native Now Playing includes the selected album cover and title")
   near(9);precondition(audio.player.rate==0);print("PASS exact paused load without preparation-time skip")
   let play=command("play");try await wait(play)
   for _ in 0..<200 {if audio.player.timeControlStatus == .playing {break};try await Task.sleep(for:.milliseconds(25))}
@@ -61,7 +71,7 @@ private final class ResolverResponseProtocol: URLProtocol, @unchecked Sendable {
   print("PASS explicit seek confirms the exact destination while paused")
   let stale=UUID().uuidString;audio.handle(["request":stale,"generation":"old-generation","command":"seek","position":20.0]);near(2)
   precondition(replies[stale]?["error"] != nil);print("PASS stale device commands cannot reposition the recording")
-  audio.stop();precondition(audio.player.currentItem==nil)
+  audio.stop();precondition(audio.player.currentItem==nil);precondition(MPNowPlayingInfoCenter.default().nowPlayingInfo==nil)
   let data=Data(#"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"mimeType":"audio/mp4","bitrate":128000,"url":"https://rr1.googlevideo.com/videoplayback?mime=audio%2Fmp4"}],"formats":[{"height":360,"mimeType":"video/mp4","url":"https://rr1.googlevideo.com/video"}]}}"#.utf8)
   let source=try YouTubeStreamResolver.parseSource(data)
   precondition(source.url.path=="/video");print("PASS music chooses the compatible full recording over adaptive audio")
@@ -74,5 +84,22 @@ private final class ResolverResponseProtocol: URLProtocol, @unchecked Sendable {
   ResolverResponseProtocol.fixture=try JSONSerialization.data(withJSONObject:root.merging(["videoDetails":["videoId":"abcdefghijk"]],uniquingKeysWith:{$1}))
   let verified=try await YouTubeStreamResolver.source("abcdefghijk",session:session)
   precondition(verified.url.path=="/video");print("PASS verified service responses prepare the selected recording")
+  ResolverResponseProtocol.alternateFixture=ResolverResponseProtocol.fixture
+  for primary in [
+   #"{"playabilityStatus":{"status":"UNPLAYABLE","reason":"Unsupported client"}}"#,
+   #"{"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"abcdefghijk"},"streamingData":{"hlsManifestUrl":"invalid://manifest"}}"#,
+   #"{"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"abcdefghijk"}}"#
+  ] {
+   ResolverResponseProtocol.fixture=Data(primary.utf8)
+   let recovered=try await YouTubeStreamResolver.source("abcdefghijk",session:session)
+   precondition(recovered.url.path=="/video")
+  }
+  print("PASS alternate client recovers unsupported, malformed and missing primary streams")
+  ResolverResponseProtocol.fixture=ResolverResponseProtocol.alternateFixture!
+  ResolverResponseProtocol.alternateFixture=Data(#"{"playabilityStatus":{"status":"UNPLAYABLE"}}"#.utf8)
+  let retained=try await YouTubeStreamResolver.source("abcdefghijk",session:session,preferHLS:true)
+  precondition(retained.url.path=="/video")
+  ResolverResponseProtocol.alternateFixture=nil
+  print("PASS failed HLS lookup preserves a playable primary recording")
  }
 }

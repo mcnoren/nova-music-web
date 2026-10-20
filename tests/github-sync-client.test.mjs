@@ -1,3 +1,4 @@
+import {libraryStorage} from '../docs/library-storage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {GitHubSyncClient,validRepository,libraryOnly} from '../docs/github-sync-client.js';
@@ -32,7 +33,7 @@ test('Github conflicts merge other-device changes and preserve local edits',asyn
  const f=fixture(t,{conflict:true});await f.client.connectGitHub('tester/nova-library','github_pat_fixture');assert.equal(f.client.status,'synced');assert.equal(f.writes,2);assert.ok(valuesOf(f.remote)['liked:abcdefghijk']);assert.ok(valuesOf(f.remote)['saved:lmnopqrstuv']);
 });
 test('quota failures back off and disconnect preserves cached unsent edits',async t=>{
- const f=fixture(t);await f.client.connectGitHub('tester/nova-library','github_pat_fixture');f.edit({...f.current,'saved:lmnopqrstuv':{id:'lmnopqrstuv',order:0}});f.setStatus(429);await f.client.sync();assert.equal(f.client.status,'error');const requests=f.requests.length;await f.client.sync();assert.equal(requests,f.requests.length);await f.client.signOut();assert.equal(f.client.user,null);assert.ok(f.current['saved:lmnopqrstuv']);assert.equal(sessionStorage.getItem('nova-music-auth-session-v1'),null);assert.ok([...localStorage.data.values()].some(value=>value.includes('saved:lmnopqrstuv')));
+ const f=fixture(t);await f.client.connectGitHub('tester/nova-library','github_pat_fixture');const id=f.client.user.id;f.edit({...f.current,'saved:lmnopqrstuv':{id:'lmnopqrstuv',order:0}});f.setStatus(429);await f.client.sync();assert.equal(f.client.status,'error');const requests=f.requests.length;await f.client.sync();assert.equal(requests,f.requests.length);await f.client.signOut();assert.equal(f.client.user,null);assert.ok(f.current['saved:lmnopqrstuv']);assert.equal(sessionStorage.getItem('nova-music-auth-session-v1'),null);assert.ok(libraryStorage.getItem('nova-music-sync-document-v1:'+id).includes('saved:lmnopqrstuv'));assert.equal(localStorage.data.size,0);
 });
 test('retired playback records never enter GitHub metadata',()=>{
  const document=updateDocument(emptyDocument(),{}, {'connect:session':{owner:'old'},'liked:abcdefghijk':{id:'abcdefghijk'}},'00000000-0000-4000-8000-000000000001');assert.deepEqual(Object.keys(libraryOnly(document).records),['liked:abcdefghijk']);assert.throws(()=>validRepository('https://github.com/tester/repo'));assert.throws(()=>validRepository('tester/..'));

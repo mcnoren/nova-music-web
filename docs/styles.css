@@ -123,3 +123,18 @@ button.review-row:hover,button.song-search-row:hover{background:#ffffff0e}.revie
 .fullscreen-lyrics .lyric-line{transition:color .2s}
 
 .fullscreen-lyrics .lyric-line.active{transform:scale(.75)}
+
+/* Folder controls share one layout in the browser and the Mac shell. */
+.folder-items{display:flex;flex-direction:column;gap:8px}
+.folder-item{display:flex;align-items:center;gap:14px;padding:12px;border-radius:14px;background:var(--surface,rgba(255,255,255,.04));min-width:0}
+.folder-art{width:60px;height:60px;object-fit:cover;border-radius:8px;display:block}
+.folder-cover{flex-shrink:0}.folder-item .song-info{min-width:0;flex:1}.folder-item-actions{display:flex;align-items:center;gap:3px}
+.folder-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:20px}
+.folder-gallery .folder-item{position:relative;flex-wrap:wrap;align-content:start;gap:10px}
+.folder-gallery .folder-cover{width:100%}.folder-gallery .folder-art{width:100%;height:auto;aspect-ratio:1;object-fit:cover}
+.folder-gallery .song-info{flex-basis:calc(100% - 46px)}.folder-gallery .folder-item-actions{margin-left:auto}
+.drag-handle{touch-action:none;cursor:grab;font-size:24px}.dragging{opacity:.5}.drop-target{outline:2px solid #63d895;outline-offset:2px}
+[data-action="output-location"].remote-output{color:#63d895!important}
+#folder-replacement-filter{width:100%}.menu-list [data-action="folder-replace-confirm"]{display:flex;align-items:center;gap:12px;text-align:left}.menu-list [hidden]{display:none!important}
+@media(max-width:520px){.folder-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.folder-item{gap:10px;padding:10px}.folder-item-actions .icon-button{width:32px;min-width:32px}}
+@media(max-width:760px){body:has(.folder-items) .page-heading{flex-direction:column;align-items:flex-start;gap:16px}body:has(.folder-items) .page-heading .button-row{width:100%;justify-content:flex-start;gap:12px}}

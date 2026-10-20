@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import WebKit
 import MediaPlayer
+import AppKit
 
 struct MacAudioError: LocalizedError { let message:String; var errorDescription:String? { message } }
 struct YouTubeStreamSource: Sendable {
@@ -15,27 +16,24 @@ enum YouTubeStreamResolver {
     }
     static func source(_ id: String, session: URLSession = .shared, preferHLS: Bool = false) async throws -> YouTubeStreamSource {
         let data = try await response(id, session: session)
-        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        let streams = root["streamingData"] as? [String: Any]
-        let playable = (root["playabilityStatus"] as? [String: Any])?["status"] as? String == "OK"
-        var alternateData: Data?
-        if preferHLS, playable, streams?["hlsManifestUrl"] == nil {
-            // Give the alternate client a chance to supply HLS before settling
-            // for a muxed SD response. A valid old source survives lookup failure.
-            alternateData = try? await response(id, session: session, liveHLS: true)
+        // A catalog recording can be unsupported by one public player client.
+        // Try the same recording with the alternate client on any unplayable
+        // response, including non-OK status and malformed/missing streams.
+        let primary: YouTubeStreamSource
+        do { primary = try parseSource(data, preferHLS: preferHLS) }
+        catch {
             try Task.checkCancellation()
-            if let alternate = alternateData,
-               let source = try? parseSource(alternate, preferHLS: true), source.isHLS { return source }
+            return try parseSource(await response(id, session: session, liveHLS: true), preferHLS: preferHLS)
         }
-        // Some recordings and broadcasts expose only SABR to the iOS client.
-        // The alternate public client can supply native 360p MP4 or live HLS.
-        if playable, streams?["hlsManifestUrl"] == nil {
-            if let source = try? parseSource(data, preferHLS: preferHLS) { return source }
-            if let alternateData { return try parseSource(alternateData, preferHLS: preferHLS) }
-            return try parseSource(await response(id, session: session, liveHLS: true))
+        if preferHLS && !primary.isHLS {
+            do {
+                let alternate = try parseSource(await response(id, session: session, liveHLS: true), preferHLS: true)
+                if alternate.isHLS { return alternate }
+            } catch { try Task.checkCancellation() }
         }
-        return try parseSource(data, preferHLS: preferHLS)
+        return primary
     }
+
     static func durationLabel(_ id: String, session: URLSession = .shared) async throws -> String? {
         let root = try JSONSerialization.jsonObject(with: await response(id, session: session)) as? [String: Any] ?? [:]
         guard !isLiveBroadcast(root), let details = root["videoDetails"] as? [String: Any],
@@ -301,27 +299,40 @@ private final class StreamMessageProxy: NSObject, WKScriptMessageHandler {
 /// Clock samples are telemetry, never synchronization seeks or rate corrections.
 @MainActor
 final class NativeMusicAudio {
-    let player = AVPlayer()
+    let player = AVQueuePlayer()
     var emit: (([String:Any])->Void)?
     var remoteAction: ((String)->Void)?
+    private let artworkSession: URLSession
     private let prepareItem: ((String) async throws -> AVPlayerItem)?
     private var resolver: EmbeddedStreamBridge?
     private let streamCache=MusicStreamCache()
     private var task: Task<Void,Never>?
+    private var nextTask: Task<Void,Never>?
+    private var nextItem: AVPlayerItem?
+    private var nextMetadata: [String:Any]?
+    private var nextRevision = UUID()
+    private var queueObservation: NSKeyValueObservation?
     private var generation = UUID().uuidString
     private var videoID = ""
     private var loading = false
     private var requestedPlaying = false
-    private var title = "", artist = ""
+    private var title = "", artist = "", album = ""
+    private var artwork: MPMediaItemArtwork?
+    private var artworkTask: Task<Void,Never>?
     private var clockObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var timeObservation: NSKeyValueObservation?
     private var itemObservation: NSKeyValueObservation?
 
-    init(prepareItem: ((String) async throws -> AVPlayerItem)? = nil) {
+    init(prepareItem: ((String) async throws -> AVPlayerItem)? = nil, artworkSession: URLSession = .shared) {
+        self.artworkSession=artworkSession
         self.prepareItem=prepareItem
         player.automaticallyWaitsToMinimizeStalling = true
         player.defaultRate = 1
+        player.actionAtItemEnd = .advance
+        queueObservation = player.observe(\.currentItem, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in self?.adoptQueuedItem() }
+        }
         let remote=MPRemoteCommandCenter.shared()
         remote.playCommand.addTarget { [weak self] _ in Task { @MainActor in self?.systemTransport(playing:true) };return .success }
         remote.pauseCommand.addTarget { [weak self] _ in Task { @MainActor in self?.systemTransport(playing:false) };return .success }
@@ -349,12 +360,17 @@ final class NativeMusicAudio {
         guard !videoID.isEmpty else { return }
         emit?(["state":snapshot])
         let position=finite(player.currentTime().seconds)
-        MPNowPlayingInfoCenter.default().nowPlayingInfo=[MPMediaItemPropertyTitle:title,MPMediaItemPropertyArtist:artist,MPMediaItemPropertyPlaybackDuration:finite(player.currentItem?.duration.seconds ?? 0),MPNowPlayingInfoPropertyElapsedPlaybackTime:position,MPNowPlayingInfoPropertyPlaybackRate:player.timeControlStatus == .playing ? 1.0 : 0.0]
+        var info: [String:Any]=[MPMediaItemPropertyTitle:title,MPMediaItemPropertyArtist:artist,MPMediaItemPropertyPlaybackDuration:finite(player.currentItem?.duration.seconds ?? 0),MPNowPlayingInfoPropertyElapsedPlaybackTime:position,MPNowPlayingInfoPropertyPlaybackRate:player.timeControlStatus == .playing ? 1.0 : 0.0]
+        info[MPMediaItemPropertyAlbumTitle]=album
+        if let artwork { info[MPMediaItemPropertyArtwork]=artwork }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo=info
         MPNowPlayingInfoCenter.default().playbackState = player.timeControlStatus == .playing ? .playing : .paused
     }
     func stop() {
+        artworkTask?.cancel();artworkTask=nil;artwork=nil
+        nextRevision = UUID(); nextTask?.cancel(); nextTask=nil; nextItem=nil; nextMetadata=nil
         task?.cancel(); task=nil; resolver?.cancel()
-        player.pause();player.replaceCurrentItem(with:nil);itemObservation=nil
+        player.pause();player.removeAllItems();itemObservation=nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver);self.endObserver=nil }
         videoID="";loading=false;requestedPlaying=false;generation=UUID().uuidString
         MPNowPlayingInfoCenter.default().nowPlayingInfo=nil
@@ -366,31 +382,20 @@ final class NativeMusicAudio {
             if let id=message["videoId"] as? String,id.range(of:"^[A-Za-z0-9_-]{11}$",options:.regularExpression) != nil { streamCache.preload(id) }
             return
         }
+        if command=="queue-next" { prepareNext(message); reply(request); return }
         if command=="load" {
             guard let id=message["videoId"] as? String,id.range(of:"^[A-Za-z0-9_-]{11}$",options:.regularExpression) != nil,
                   let position=message["position"] as? Double,position.isFinite,position>=0,
                   let playing=message["playing"] as? Bool,let clientGeneration=message["generation"] as? String,clientGeneration.count<=80 else { return }
             stop();player.volume=Float(min(100,max(0,message["volume"] as? Double ?? 80))/100);videoID=id;generation=clientGeneration;loading=true;requestedPlaying=playing
             title=String((message["title"] as? String ?? "Nova Music").prefix(1000));artist=String((message["artist"] as? String ?? "").prefix(1000))
+            album=String((message["album"] as? String ?? "").prefix(1000))
             let token=generation;publish()
+            loadArtwork(message["artwork"] as? String, token: token)
             task=Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let item:AVPlayerItem
-                    if let prepareItem { item=try await prepareItem(id) } else {
-                    let source:YouTubeStreamSource
-                    do { source=try await streamCache.source(id) }
-                    catch {
-                        try Task.checkCancellation()
-                        if resolver==nil { resolver=EmbeddedStreamBridge() }
-                        source=try await resolver!.source(id)
-                    }
-                    try check(token)
-                    // Use the native HTTPS transport for the compatible MP4.
-                    // AVFoundation owns byte ranges, buffering and decoding;
-                    // custom ranges can truncate the CDN response on macOS.
-                    item=AVPlayerItem(url:source.url)
-                    }
+                    let item = try await makeItem(id)
                     try check(token)
                     item.preferredForwardBufferDuration=3
                     item.audioTimePitchAlgorithm = .spectral
@@ -400,13 +405,8 @@ final class NativeMusicAudio {
                     guard item.status == .readyToPlay else { throw item.error ?? MacAudioError(message:"This recording could not prepare. Try another recording.") }
                     try await seek(position,token:token)
                     try check(token);loading=false
-                    endObserver=NotificationCenter.default.addObserver(forName:.AVPlayerItemDidPlayToEndTime,object:item,queue:.main) { [weak self] _ in
-                        Task { @MainActor in guard let self,self.generation==token else { return };var value=self.snapshot;value["state"]=0;self.emit?(["state":value]); }
-                    }
-                    itemObservation=item.observe(\.status,options:[.new]) { [weak self] item,_ in
-                        guard item.status == .failed else { return }
-                        Task { @MainActor in guard let self,self.generation==token else { return };self.player.pause();self.emit?(["error":"The audio stream stopped. Try playing the song again.","generation":token]); }
-                    }
+                    observeEnd(item, token: token)
+                    observeFailure(item, token: token)
                     if requestedPlaying { player.play() }
                     publish();reply(request)
                 } catch {
@@ -428,6 +428,88 @@ final class NativeMusicAudio {
                 do { try await seek(position,token:token);publish();reply(request) } catch { reply(request,error:error) }
             }
         }
+    }
+    private func loadArtwork(_ raw: String?, token: String) {
+        artworkTask?.cancel(); artwork = nil
+        guard let raw, raw.count <= 8000, let url = URL(string: raw), url.scheme == "https" else { return }
+        let artworkID = videoID
+        artworkTask = Task { [weak self] in
+            do {
+                guard let self else { return }
+                let (data,response) = try await self.artworkSession.data(from: url)
+                guard !Task.isCancelled, self.generation == token, self.videoID == artworkID,
+                      (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 8_000_000,
+                      let image = NSImage(data: data), image.size.width > 0, image.size.height > 0 else { return }
+                self.artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                self.publish()
+            } catch { /* Artwork never delays audio. */ }
+        }
+    }
+    private func makeItem(_ id: String) async throws -> AVPlayerItem {
+        if let prepareItem { return try await prepareItem(id) }
+        let source: YouTubeStreamSource
+        do { source = try await streamCache.source(id) }
+        catch {
+            try Task.checkCancellation()
+            if resolver == nil { resolver = EmbeddedStreamBridge() }
+            source = try await resolver!.source(id)
+        }
+        try Task.checkCancellation()
+        return AVPlayerItem(url: source.url)
+    }
+    private func prepareNext(_ message: [String:Any]) {
+        guard message["generation"] as? String == generation else { return }
+        nextRevision = UUID(); let revision = nextRevision, token = generation
+        nextTask?.cancel(); nextTask = nil
+        if let nextItem, player.currentItem !== nextItem { player.remove(nextItem) }
+        nextItem = nil; nextMetadata = nil
+        guard let id = message["videoId"] as? String, id.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else { return }
+        nextTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let item = try await makeItem(id)
+                try check(token)
+                guard nextRevision == revision, let current = player.currentItem else { return }
+                item.preferredForwardBufferDuration = 5
+                item.audioTimePitchAlgorithm = .spectral
+                guard player.canInsert(item, after: current) else { return }
+                nextItem = item; nextMetadata = message
+                player.insert(item, after: current)
+            } catch { /* The regular next-track path retries if preparation fails. */ }
+        }
+    }
+    private func observeFailure(_ item: AVPlayerItem, token: String) {
+        itemObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            Task { @MainActor in
+                guard let self, self.generation == token, self.player.currentItem === item else { return }
+                self.player.pause(); self.emit?(["error":"The audio stream stopped. Try playing the song again.", "generation":token])
+            }
+        }
+    }
+    private func observeEnd(_ item: AVPlayerItem, token: String) {
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.generation == token else { return }
+                if self.nextItem != nil { self.adoptQueuedItem(); return }
+                // A queued item may already have been adopted by currentItem KVO.
+                guard self.player.currentItem === item || self.player.currentItem == nil else { return }
+                var value = self.snapshot; value["state"] = 0; self.emit?(["state": value])
+            }
+        }
+    }
+    private func adoptQueuedItem() {
+        guard let item = nextItem, player.currentItem === item, let metadata = nextMetadata,
+              let id = metadata["videoId"] as? String else { return }
+        nextItem = nil; nextMetadata = nil; loading = false
+        videoID = id; title = metadata["title"] as? String ?? "Nova Music"
+        artist = metadata["artist"] as? String ?? ""; album = metadata["album"] as? String ?? ""
+        loadArtwork(metadata["artwork"] as? String, token: generation)
+        observeEnd(item, token: generation)
+        observeFailure(item, token: generation)
+        emit?(["advanced": id, "state": snapshot])
+        publish()
     }
     private func check(_ token:String) throws { try Task.checkCancellation();if generation != token { throw CancellationError() } }
     private func seek(_ seconds:Double,token:String) async throws {

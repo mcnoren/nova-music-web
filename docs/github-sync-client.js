@@ -1,5 +1,5 @@
-import {NovaSyncClient,accountLibraryKey} from './sync-client.js?v=1370aeeba3ab';
-import {emptyDocument,validateDocument,mergeDocuments,updateDocument,valuesOf,documentsEqual} from './sync-model.js?v=dbd0efff3529';
+import {NovaSyncClient,accountLibraryKey} from './sync-client.js?v=0c40be31f132';
+import {emptyDocument,validateDocument,mergeDocuments,updateDocument,valuesOf,documentsEqual} from './sync-model.js?v=d6408be34cee';
 
 const SESSION='nova-music-auth-session-v1';
 export function validRepository(raw){

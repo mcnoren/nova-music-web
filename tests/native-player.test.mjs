@@ -40,3 +40,16 @@ test('native loads include current album and cover art for macOS Now Playing',as
  const work=f.player.loadVideoById({videoId:'abcdefghijk',title:'Track',artist:'Artist',album:'Album',artwork});
  assert.equal(f.sent[0].album,'Album');assert.equal(f.sent[0].artwork,artwork);f.reply('load');await work;f.player.destroy();
 });
+test('native queue preparation keeps the active generation and adopts the next track before state events',async()=>{
+ const target=new EventTarget(),sent=[],changes=[];
+ const player=new NativeMusicPlayer({post:value=>sent.push(value)},{onTrackChange:value=>changes.push(value.id)},target);
+ const load=player.loadVideoById({videoId:'abcdefghijk'});const generation=player.generation;
+ player.receive({request:sent[0].request,state:{id:'abcdefghijk',generation,state:1,position:0,duration:180}});await load;
+ const preparing=player.queueNext({id:'lmnopqrstuv',title:'Next',artist:'Artist'});const request=sent.at(-1);
+ assert.equal(request.command,'queue-next');assert.equal(request.generation,generation);
+ player.receive({request:request.request});await preparing;
+ player.receive({advanced:'lmnopqrstuv',state:{id:'lmnopqrstuv',generation,state:1,position:0,duration:200}});
+ assert.deepEqual(changes,['lmnopqrstuv']);assert.match(player.getVideoUrl(),/lmnopqrstuv/);
+ player.receive({advanced:'abcdefghijk',state:{id:'abcdefghijk',generation:'stale',state:1,position:0}});
+ assert.deepEqual(changes,['lmnopqrstuv']);player.destroy();
+});

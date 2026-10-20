@@ -1,16 +1,17 @@
-import {emptyDocument, validateDocument, mergeDocuments, updateDocument, valuesOf, documentsEqual} from './sync-model.js?v=dbd0efff3529';
+import {libraryStorage} from './library-storage.js?v=2b2dd930b6fd';
+import {emptyDocument, validateDocument, mergeDocuments, updateDocument, valuesOf, documentsEqual} from './sync-model.js?v=d6408be34cee';
 
 const SESSION = 'nova-music-auth-session-v1';
 export const accountLibraryKey = id => 'nova-music-account-library-v1:' + id;
 const documentKey = id => 'nova-music-sync-document-v1:' + id;
 const actorKey = 'nova-music-sync-device-v1';
-function read(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
+function read(key, fallback) { try { return JSON.parse(libraryStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
 
 export class NovaSyncClient {
   constructor(config, callbacks) {
     this.config = config; this.callbacks = callbacks; this.session = null; this.document = emptyDocument();
     this.previous = {}; this.generation = 0; this.busy = false; this.status = 'signed-out'; this.lastSynced = null; this.connectDirty = true; this.serverRevision = null;
-    this.actor = localStorage.getItem(actorKey) || crypto.randomUUID(); localStorage.setItem(actorKey, this.actor);
+    this.actor = libraryStorage.getItem(actorKey) || crypto.randomUUID(); libraryStorage.setItem(actorKey, this.actor);
     this.configured = Boolean(config.url && config.publishableKey);
     if (this.configured) {
       const url = new URL(config.url);
@@ -176,11 +177,11 @@ export class NovaSyncClient {
     if (['error', 'offline', 'pending'].includes(this.status)) throw Error('Some changes have not synced. Go online and sync before signing out so those changes are preserved.');
     const old = this.session, id = this.user.id;
     ++this.generation; clearTimeout(this.timer); this.session = null; this.activeUser = null;
-    sessionStorage.removeItem(SESSION); window.novaDesktop?.post({type:'session',value:null}); localStorage.removeItem(accountLibraryKey(id)); localStorage.removeItem(documentKey(id));
+    sessionStorage.removeItem(SESSION); window.novaDesktop?.post({type:'session',value:null}); libraryStorage.removeItem(accountLibraryKey(id)); libraryStorage.removeItem(documentKey(id));
     this.document = emptyDocument(); this.previous = {}; this.callbacks.deactivate(); this.updateStatus('signed-out');
     try { await this.request('/auth/v1/logout?scope=local', {method: 'POST', token: old.access_token}); } catch { /* Local credentials have already been cleared. */ }
   }
-  saveDocument() { if (this.user) localStorage.setItem(documentKey(this.user.id), JSON.stringify(this.document)); }
+  saveDocument() { if (this.user) libraryStorage.setItem(documentKey(this.user.id), JSON.stringify(this.document)); }
   saveSession() {
     if (this.session.expires_in && !this.session.expires_at) this.session.expires_at = Math.floor(Date.now() / 1000) + this.session.expires_in;
     sessionStorage.setItem(SESSION, JSON.stringify(this.session));

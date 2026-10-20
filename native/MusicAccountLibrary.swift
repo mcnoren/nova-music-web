@@ -1,5 +1,5 @@
 import Foundation
-import UIKit
+import ImageIO
 import CryptoKit
 
 @MainActor
@@ -87,7 +87,13 @@ enum MusicAccountLibrary {
             let id = folder.id.uuidString.lowercased()
             var value = old["folder:\(id)"]?.object ?? [:]
             value["id"] = .string(id); value["name"] = .string(folder.name); value["order"] = .number(Double(order))
-            value["items"] = .array(folder.albums.map { .object(["kind":.string("album"),"id":.string($0.id)]) } + folder.playlistIDs.map { .object(["kind":.string("playlist"),"id":.string($0.uuidString.lowercased())]) })
+            value["items"] = .array(store.folderItems(folder.id).map { item in
+                switch item {
+                case .album(let album): return .object(["kind":.string("album"),"id":.string(album.id)])
+                case .playlist(let id): return .object(["kind":.string("playlist"),"id":.string(id.uuidString.lowercased())])
+                }
+            })
+            value["view"] = .string(folder.gallery == true ? "gallery" : "list")
             value["pins"] = .array((folder.pinnedItemIDs ?? []).map { pin in .string(pin.hasPrefix("playlist:") ? pin.lowercased() : pin) })
             value["native"] = try .encoded(folder)
             result["folder:\(id)"] = .object(value)
@@ -101,9 +107,10 @@ enum MusicAccountLibrary {
         for (index, song) in store.musicHistory.enumerated() {
             result["recent:\(song.id)"] = old["recent:\(song.id)"] ?? .object(["id":.string(song.id),"at":.number(Date().timeIntervalSince1970 * 1000 - Double(index))])
         }
+        for (context,position) in store.collectionPositions { result["collectionPosition:" + context] = try .encoded(position) }
         if store.musicProfile != MusicAccountProfile() { result["profile:main"] = try .encoded(store.musicProfile.validated()) }
         result["preference:genres"] = .array(store.discoverGenres.map(NovaSyncValue.string))
-        result.merge(old.filter { $0.key.hasPrefix("connect:") },uniquingKeysWith:{ _,new in new })
+        result.merge(old.filter { ($0.key.hasPrefix("connect:") || $0.key == "deviceTrust:localPlayback") },uniquingKeysWith:{ _,new in new })
         return result
     }
 
@@ -185,10 +192,12 @@ enum MusicAccountLibrary {
             guard let text = value["id"]?.string, let id = UUID(uuidString:text), let name = value["name"]?.string, let items = value["items"]?.array else { throw NovaSyncFailure.invalidDocument }
             var folder = (try? value["native"]?.decoded(MusicLibraryFolder.self)) ?? MusicLibraryFolder(name:name)
             folder.id = id; folder.name = name; folder.albums = []; folder.playlistIDs = []
+            folder.itemOrder = []
+            folder.gallery = value["view"]?.string == "gallery"
             for item in items {
                 guard let kind = item["kind"]?.string, let itemID = item["id"]?.string else { throw NovaSyncFailure.invalidDocument }
-                if kind == "album" { guard let album = albums[itemID] else { throw NovaSyncFailure.invalidDocument }; folder.albums.append(album) }
-                else if kind == "playlist" { guard let playlistID = UUID(uuidString:itemID) else { throw NovaSyncFailure.invalidDocument }; folder.playlistIDs.append(playlistID) }
+                if kind == "album" { guard let album = albums[itemID] else { throw NovaSyncFailure.invalidDocument }; folder.albums.append(album); folder.itemOrder?.append("album:\(album.id)") }
+                else if kind == "playlist" { guard let playlistID = UUID(uuidString:itemID) else { throw NovaSyncFailure.invalidDocument }; folder.playlistIDs.append(playlistID); folder.itemOrder?.append("playlist:\(playlistID.uuidString)") }
                 else { throw NovaSyncFailure.invalidDocument }
             }
             folder.pinnedItemIDs = value["pins"]?.array?.compactMap(\.string).map { pin in
@@ -209,6 +218,12 @@ enum MusicAccountLibrary {
             if let artist { discs[artist,default:[:]][album] = selected.compactMap(\.safeInt) }
         }
         let profile = try values["profile:main"].map { try $0.decoded(MusicAccountProfile.self).validated() } ?? MusicAccountProfile()
+        var positions: [String:MusicCollectionPosition] = [:]
+        for (key,value) in values where key.hasPrefix("collectionPosition:") {
+            let context=String(key.dropFirst(19)),position=try value.decoded(MusicCollectionPosition.self)
+            guard MusicCollectionPosition.validContext(context),YouTubeLink.validID(position.songID),position.at.isFinite else { throw NovaSyncFailure.invalidDocument }
+            positions[context]=position
+        }
         // Validate and decode every supported collection before changing any live state.
         store.musicProfile = profile
         store.defaults.set(try JSONEncoder().encode(profile),forKey:"music.account.profile")
@@ -218,6 +233,7 @@ enum MusicAccountLibrary {
         store.followedArtists = orderedIDs("followedArtist").compactMap { artists[$0] }
         store.playlists = playlists; store.musicFolders = folders; store.artistFolders = artistFolders
         store.artistReleaseSelections = releases; store.artistDiscSelections = discs
+        store.collectionPositions=positions
         store.musicHistory = group("recent").sorted { ($0["at"]?.number ?? 0) > ($1["at"]?.number ?? 0) }.prefix(100).compactMap { $0["id"]?.string }.compactMap { songs[$0] }
         if let genres = values["preference:genres"]?.array { store.discoverGenres = genres.compactMap(\.string) }
         store.defaults.set(orderedIDs("artistPin"),forKey:"music.pinnedArtists")
@@ -231,15 +247,8 @@ enum MusicAccountLibrary {
     private static func sharedArtwork(_ choice:MusicCollectionArtworkChoice?) throws -> NovaSyncValue {
         guard let choice else { return .null }
         if choice.style == .photo {
-            guard let filename=choice.photoFile,let url=MusicArtworkFiles.url(filename),let data=try? Data(contentsOf:url),let image=UIImage(data:data) else { throw YouTubeAPI.Failure(message:"Playlist artwork couldn't be read. Choose the photo again.") }
-            let jpeg:Data
-            if max(image.size.width,image.size.height)<=512 { jpeg=data }
-            else {
-                let scale=512/max(image.size.width,image.size.height),size=CGSize(width:image.size.width*scale,height:image.size.height*scale)
-                let format=UIGraphicsImageRendererFormat();format.scale=1;format.opaque=true
-                guard let resized=UIGraphicsImageRenderer(size:size,format:format).image(actions:{ _ in image.draw(in:CGRect(origin:.zero,size:size)) }).jpegData(compressionQuality:0.8) else { throw NovaSyncFailure.invalidDocument }
-                jpeg=resized
-            }
+            guard let filename=choice.photoFile,let url=MusicArtworkFiles.url(filename),let data=try? Data(contentsOf:url) else { throw NovaSyncFailure.invalidDocument }
+            let jpeg = try MusicImageData.jpeg(data, maximumDimension: 512)
             guard jpeg.count<=450000 else { throw YouTubeAPI.Failure(message:"Playlist artwork is too large to sync. Choose a smaller photo.") }
             return .object(["style":.string("photo"),"image":.string("data:image/jpeg;base64,"+jpeg.base64EncodedString())])
         }
@@ -255,7 +264,7 @@ enum MusicAccountLibrary {
             guard let symbol=value["symbol"]?.string,artworkSymbols.contains(symbol) else { throw NovaSyncFailure.invalidDocument }
             return .init(symbol:symbol)
         }
-        guard style=="photo",let raw=value["image"]?.string,raw.count<=600000,raw.hasPrefix("data:image/jpeg;base64,"),let data=Data(base64Encoded:String(raw.dropFirst(23))),data.count<=450000,let image=UIImage(data:data),image.size.width>0,image.size.height>0,max(image.size.width,image.size.height)<=1024 else { throw NovaSyncFailure.invalidDocument }
+        guard style=="photo",let raw=value["image"]?.string,raw.count<=600000,raw.hasPrefix("data:image/jpeg;base64,"),let data=Data(base64Encoded:String(raw.dropFirst(23))),data.count<=450000,MusicImageData.valid(data, maximumDimension:1024) else { throw NovaSyncFailure.invalidDocument }
         let filename="sync-"+SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined()+".jpg"
         guard let url=MusicArtworkFiles.url(filename) else { throw NovaSyncFailure.invalidDocument }
         if !FileManager.default.fileExists(atPath:url.path) { try FileManager.default.createDirectory(at:MusicArtworkFiles.directory,withIntermediateDirectories:true);try data.write(to:url,options:.atomic) }

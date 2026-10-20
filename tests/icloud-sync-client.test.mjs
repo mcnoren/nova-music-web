@@ -1,3 +1,4 @@
+import {libraryStorage} from '../docs/library-storage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ICloudSyncClient,CloudKitWebStorage,webPartName,readWebParts} from '../docs/icloud-sync-client.js';
@@ -35,7 +36,7 @@ test('iCloud uploads existing library and retries conflicting edits',async t=>{
  const env=fixture(t),phone=env.device('Phone');env.conflict();await phone.account.enable();assert.equal(phone.account.status,'synced');const values=valuesOf(env.docs.get('nova-library'));assert.ok(values['liked:abcdefghijk']);assert.ok(values['saved:lmnopqrstuv']);assert.ok(!Object.keys(values).some(k=>k.startsWith('connect:')));
 });
 test('offline and disconnect preserve unsent library edits',async t=>{
- const env=fixture(t),phone=env.device('Phone');await phone.account.enable();phone.edit({...phone.current,'saved:lmnopqrstuv':{id:'lmnopqrstuv',order:0}});env.setOffline(true);await phone.account.sync();assert.equal(phone.account.status,'error');await phone.account.signOut();assert.ok(phone.current['saved:lmnopqrstuv']);assert.equal(phone.account.user,null);assert.ok([...localStorage.data.values()].some(v=>v.includes('saved:lmnopqrstuv')));
+ const env=fixture(t),phone=env.device('Phone');await phone.account.enable();phone.edit({...phone.current,'saved:lmnopqrstuv':{id:'lmnopqrstuv',order:0}});env.setOffline(true);await phone.account.sync();assert.equal(phone.account.status,'error');await phone.account.signOut();assert.ok(phone.current['saved:lmnopqrstuv']);assert.equal(phone.account.user,null);assert.ok(libraryStorage.getItem('nova-icloud-document-v1:'+USER).includes('saved:lmnopqrstuv'));assert.equal(localStorage.data.size,0);
 });
 test('changing Apple Accounts prevents uploads to the second account',async t=>{
  const env=fixture(t),phone=env.device('Phone');await phone.account.enable();const count=env.writes.length;phone.edit({...phone.current,'saved:lmnopqrstuv':{id:'lmnopqrstuv',order:0}});env.setIdentity('00000000-0000-4000-8000-000000000002');await phone.account.sync();assert.equal(env.writes.length,count);assert.equal(phone.account.user,null);assert.ok(phone.current['saved:lmnopqrstuv']);

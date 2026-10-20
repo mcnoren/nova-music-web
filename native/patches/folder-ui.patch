@@ -1,0 +1,261 @@
+--- a/NovaBrowser/MusicLibraryOrganization.swift
++++ b/NovaBrowser/MusicLibraryOrganization.swift
+@@ -15,6 +15,8 @@
+     var albums: [YouTubeMusicAlbum] = []
+     var playlistIDs: [UUID] = []
+     var pinnedItemIDs: [String]? = nil
++    var itemOrder: [String]? = nil
++    var gallery: Bool? = nil
+     var artwork: MusicCollectionArtworkChoice? = nil
+ }
+ 
+@@ -127,7 +129,12 @@
+             lastAddedMusicFolderID = id
+             defaults.set(id.uuidString, forKey: "music.lastAddedFolder")
+         }
+-        if !included { musicFolders[index].pinnedItemIDs?.removeAll { $0 == item.id } }
++        if !included {
++            musicFolders[index].pinnedItemIDs?.removeAll { $0 == item.id }
++            musicFolders[index].itemOrder?.removeAll { $0 == item.id }
++        } else if musicFolders[index].itemOrder != nil, musicFolders[index].itemOrder?.contains(item.id) != true {
++            musicFolders[index].itemOrder?.append(item.id)
++        }
+         persistMusicFolders()
+     }
+ 
+@@ -135,12 +142,43 @@
+         guard let folder = musicFolder(id) else { return [] }
+         let items = folder.albums.map(MusicFolderItem.album) + folder.playlistIDs.filter { playlist($0) != nil }.map(MusicFolderItem.playlist)
+         let pins = folder.pinnedItemIDs ?? []
++        let order = folder.itemOrder ?? pins
+         return items.enumerated().sorted { left, right in
+-            let a = pins.firstIndex(of: left.element.id), b = pins.firstIndex(of: right.element.id)
++            let a = order.firstIndex(of: left.element.id), b = order.firstIndex(of: right.element.id)
+             if let a, let b { return a < b }
+             if (a != nil) != (b != nil) { return a != nil }
+             return left.offset < right.offset
+         }.map(\.element)
++    }
++
++    func moveFolderItem(_ item: MusicFolderItem, to target: MusicFolderItem, in id: UUID) {
++        guard let index = musicFolders.firstIndex(where: { $0.id == id }) else { return }
++        var order = folderItems(id).map(\.id)
++        guard let from = order.firstIndex(of: item.id), let to = order.firstIndex(of: target.id), from != to else { return }
++        order.remove(at: from); order.insert(item.id, at: to)
++        musicFolders[index].itemOrder = order
++        persistMusicFolders()
++    }
++
++    func replaceFolderItem(_ old: MusicFolderItem, with replacement: MusicFolderItem, in id: UUID) {
++        guard old != replacement, !folder(id, contains: replacement), let index = musicFolders.firstIndex(where: { $0.id == id }) else { return }
++        let order = folderItems(id).map { $0.id == old.id ? replacement.id : $0.id }
++        switch old {
++        case .album(let album): musicFolders[index].albums.removeAll { $0.id == album.id }
++        case .playlist(let playlist): musicFolders[index].playlistIDs.removeAll { $0 == playlist }
++        }
++        switch replacement {
++        case .album(let album): musicFolders[index].albums.append(album)
++        case .playlist(let playlist): musicFolders[index].playlistIDs.append(playlist)
++        }
++        musicFolders[index].itemOrder = order
++        musicFolders[index].pinnedItemIDs = musicFolders[index].pinnedItemIDs?.map { $0 == old.id ? replacement.id : $0 }
++        persistMusicFolders()
++    }
++
++    func setFolderGallery(_ gallery: Bool, in id: UUID) {
++        guard let index = musicFolders.firstIndex(where: { $0.id == id }) else { return }
++        musicFolders[index].gallery = gallery; persistMusicFolders()
+     }
+ 
+     func isFolderItemPinned(_ item: MusicFolderItem, in id: UUID) -> Bool {
+--- a/NovaBrowser/MusicLibraryViews.swift
++++ b/NovaBrowser/MusicLibraryViews.swift
+@@ -338,6 +338,9 @@
+     @State private var selecting = false
+     @State private var selected = Set<String>()
+     @State private var editing = false
++    @State private var arranging = false
++    @State private var draggedItem: MusicFolderItem?
++    @State private var replacingItem: MusicFolderItem?
+     @State private var shuffleRequest = 0
+     @State private var preparingShuffle = false
+     @State private var shuffleError: String?
+@@ -387,16 +390,21 @@
+                         HStack(spacing: 8) {
+                             if preparingShuffle { ProgressView().tint(.white) }
+                             else { Image(systemName: "shuffle") }
+-                            Text(preparingShuffle ? "Preparing" : "Shuffle").font(.subheadline.weight(.semibold))
+-                        }.padding(.horizontal, 16).frame(height: 44)
++                            
++                        }.frame(width: 44, height: 44)
+                             .background(.white.opacity(0.12), in: Capsule())
+                     }.disabled(items.isEmpty || preparingShuffle).accessibilityLabel("Shuffle folder")
+                     }
+                 }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                 HStack {
+-                    Button { editing = true } label: { Label("Add items", systemImage: "plus") }
++                    Button { editing = true } label: { Image(systemName: "plus").frame(width: 28, height: 28) }
++                        .accessibilityLabel("Add items")
+                         .buttonStyle(.bordered).accessibilityIdentifier("folder.addItems")
+                     Spacer()
++                    Button { store.setFolderGallery(folder?.gallery != true, in: folderID) } label: {
++                        Image(systemName: folder?.gallery == true ? "list.bullet" : "square.grid.2x2")
++                    }.accessibilityLabel(folder?.gallery == true ? "List view" : "Gallery view")
++                    Button(arranging ? "Done" : "Edit") { arranging.toggle(); if arranging { selecting = false; filter = .all; sort = .recommended } }
+                 }.padding(.horizontal, 20).padding(.bottom, 16)
+                 HStack {
+                     Picker("Show", selection: $filter) {
+@@ -414,9 +422,21 @@
+                     ContentUnavailableView("Empty folder", systemImage: "folder", description: Text("Add albums and playlists to start listening."))
+                     Button("Add items") { editing = true }.buttonStyle(.bordered).padding(20)
+                 }
+-                MusicNativeSelectionRows(items: items, selecting: $selecting, selected: $selected, rowHeight: 96, activate: { openedItem = $0 }) { item in
+-                    folderRow(item)
+-                }.frame(height: CGFloat(items.count) * 96)
++                if folder?.gallery == true {
++                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 155))], spacing: 16) {
++                        ForEach(items) { item in folderGalleryItem(item) }
++                    }.padding(.horizontal, 20)
++                } else if arranging {
++                    ForEach(items) { item in folderRow(item).onDrag { draggedItem = item; return NSItemProvider(object: item.id as NSString) }
++                        .onDrop(of: [.text], isTargeted: nil) { _ in
++                            guard let draggedItem else { return false }
++                            store.moveFolderItem(draggedItem, to: item, in: folderID); self.draggedItem = nil; return true
++                        }
++                    }
++                } else {
++                    MusicNativeSelectionRows(items: items, selecting: $selecting, selected: $selected, rowHeight: 96, activate: { openedItem = $0 }) { item in folderRow(item) }
++                        .frame(height: CGFloat(items.count) * 96)
++                }
+             }.padding(.bottom, 24)
+                 .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.85), value: items.map(\.id))
+         }.background(Color(white: 0.055)).foregroundStyle(.white).tint(.white)
+@@ -443,6 +463,7 @@
+                 MusicFolderNameSheet(title: "Rename folder", initialName: folder?.name ?? "") { store.renameMusicFolder(folderID, to: $0) }
+             }
+             .sheet(isPresented: $editing) { MusicFolderContentsEditor(store: store, folderID: folderID) }
++            .sheet(item: $replacingItem) { item in MusicFolderContentsEditor(store: store, folderID: folderID, replacing: item) }
+             .task(id: sort) {
+                 guard sort == .newest || sort == .oldest else { return }
+                 let dates = await MusicCatalogMetadata.shared.releaseDates(for: folder?.albums ?? [])
+@@ -474,17 +495,48 @@
+                 HStack(spacing: 14) {
+                     itemContent(item)
+                     if pinned { Image(systemName: "pin.fill").font(.system(size: 10, weight: .semibold)).foregroundStyle(.pink).accessibilityHidden(true) }
+-                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.3))
++                    if arranging { Image(systemName: "line.3.horizontal").foregroundStyle(.secondary) }
+                 }.padding(.leading, 20).frame(maxWidth: .infinity, minHeight: 96, maxHeight: 96).contentShape(Rectangle())
+             }.buttonStyle(.plain)
+-            Menu { itemActions(item) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 96).contentShape(Rectangle()) }
++            Button { replacingItem = item } label: { Image(systemName: "ellipsis").frame(width: 44, height: 96).contentShape(Rectangle()) }
+                 .accessibilityLabel("Item options")
+         }.frame(maxWidth: .infinity).frame(height: 96)
+             .background(.white.opacity(pinned ? 0.065 : 0.025))
+             .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5).padding(.leading, 98).allowsHitTesting(false) }
+-            .contextMenu { itemActions(item) }
++            .gesture(LongPressGesture().onEnded { _ in replacingItem = item }, including: arranging ? .none : .all)
++
+             .accessibilityIdentifier("folder.item.\(item.id)")
+             .accessibilityValue(pinned ? "Pinned" : "")
++    }
++
++    private func folderGalleryItem(_ item: MusicFolderItem) -> some View {
++        VStack(alignment: .leading, spacing: 8) {
++            Button { openedItem = item } label: {
++                VStack(alignment: .leading, spacing: 8) {
++                    switch item {
++                    case .album(let album):
++                        MusicCollectionArtwork(choice: nil, covers: [album.artwork].compactMap { $0 }).aspectRatio(1, contentMode: .fit)
++                        Text(album.title).font(.headline).lineLimit(2)
++                    case .playlist(let id):
++                        if let playlist = store.playlist(id) {
++                            MusicCollectionArtwork(choice: playlist.customArtwork, covers: playlist.coverURLs).aspectRatio(1, contentMode: .fit)
++                            Text(playlist.name).font(.headline).lineLimit(2)
++                        }
++                    }
++                }
++            }.buttonStyle(.plain)
++            HStack {
++                if arranging { Image(systemName: "line.3.horizontal").foregroundStyle(.secondary) }
++                Spacer()
++                Button { replacingItem = item } label: { Image(systemName: "ellipsis").frame(width: 44, height: 32) }.accessibilityLabel("Collection options")
++            }
++        }.gesture(LongPressGesture().onEnded { _ in replacingItem = item }, including: arranging ? .none : .all)
++
++            .onDrag { guard arranging else { return NSItemProvider() }; draggedItem = item; return NSItemProvider(object: item.id as NSString) }
++            .onDrop(of: [.text], isTargeted: nil) { _ in
++                guard arranging, let draggedItem else { return false }
++                store.moveFolderItem(draggedItem, to: item, in: folderID); self.draggedItem = nil; return true
++            }
+     }
+ 
+     @ViewBuilder private func itemContent(_ item: MusicFolderItem) -> some View {
+@@ -500,6 +552,7 @@
+ 
+     @ViewBuilder private func itemActions(_ item: MusicFolderItem) -> some View {
+         let pinned = store.isFolderItemPinned(item, in: folderID)
++        Button("Replace collection", systemImage: "arrow.triangle.2.circlepath") { replacingItem = item }
+         Button(pinned ? "Unpin item" : "Pin to top", systemImage: pinned ? "pin.slash" : "pin") {
+             withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.85)) { store.toggleFolderItemPin(item, in: folderID) }
+         }
+@@ -558,6 +611,7 @@
+ struct MusicFolderContentsEditor: View {
+     @ObservedObject var store: YouTubeStore
+     let folderID: UUID
++    var replacing: MusicFolderItem? = nil
+     @State private var search = ""
+     @Environment(\.dismiss) private var dismiss
+     private var albums: [YouTubeMusicAlbum] {
+@@ -570,6 +624,25 @@
+         NavigationStack {
+             ScrollView {
+                 LazyVStack(spacing: 0) {
++                    if let replacing {
++                        HStack {
++                            Button(store.isFolderItemPinned(replacing, in: folderID) ? "Unpin" : "Pin") { store.toggleFolderItemPin(replacing, in: folderID) }
++                            Menu("More") {
++                                switch replacing {
++                                case .album(let album):
++                                    MusicAlbumQueueActions(store: store, album: album)
++                                    MusicAlbumQuickActions(store: store, album: album)
++                                case .playlist(let id):
++                                    if let playlist = store.playlist(id) {
++                                        MusicPlaylistQueueActions(store: store, playlist: playlist)
++                                        MusicPlaylistQuickActions(store: store, playlist: playlist)
++                                    }
++                                }
++                            }
++                            Spacer()
++                            Button("Remove from folder", role: .destructive) { store.setFolder(folderID, contains: replacing, included: false); dismiss() }
++                        }.padding(20)
++                    }
+                     Text("Albums & singles").font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading).padding(20)
+                     ForEach(albums) { album in
+                         membershipRow(.album(album)) { MusicFolderAlbumRow(album: album) }
+@@ -584,20 +657,23 @@
+                 }
+             }.background(Color(white: 0.055)).foregroundStyle(.white)
+                 .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find an album or playlist")
+-                .navigationTitle("Folder contents").navigationBarTitleDisplayMode(.inline)
++                .navigationTitle(replacing == nil ? "Folder contents" : "Replace collection").navigationBarTitleDisplayMode(.inline)
+                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+         }.preferredColorScheme(.dark).tint(.pink)
+     }
+     private func membershipRow<Content: View>(_ item: MusicFolderItem, @ViewBuilder content: () -> Content) -> some View {
+         let included = store.folder(folderID, contains: item)
+-        return Button { store.setFolder(folderID, contains: item, included: !included) } label: {
++        return Button {
++            if let replacing { store.replaceFolderItem(replacing, with: item, in: folderID); dismiss() }
++            else { store.setFolder(folderID, contains: item, included: !included) }
++        } label: {
+             HStack(spacing: 16) {
+                 content()
+                 Image(systemName: included ? "checkmark.circle.fill" : "circle").font(.title2).foregroundStyle(included ? Color.pink : .secondary)
+             }.padding(.horizontal, 20).frame(maxWidth: .infinity).frame(height: 96).contentShape(Rectangle())
+                 .background(.white.opacity(0.025))
+                 .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5).padding(.leading, 98) }
+-        }.buttonStyle(.plain).accessibilityValue(included ? "Included" : "Not included")
++        }.buttonStyle(.plain).disabled(replacing != nil && included).accessibilityValue(included ? "Included" : "Not included")
+     }
+ }
+ 

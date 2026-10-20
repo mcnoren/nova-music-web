@@ -11,6 +11,7 @@ export class NativeMusicPlayer {
     const state=value.state;
     if(state?.generation===this.generation){
       const previous=this.value.state;
+      if(value.advanced===state.id)this.events.onTrackChange?.({id:state.id});
       this.value={...state};
       if(previous!==state.state)this.events.onStateChange?.({target:this,data:state.state});
     }
@@ -33,6 +34,7 @@ export class NativeMusicPlayer {
     return this.request('load',{videoId,position:startSeconds,playing,title,artist,album,artwork,volume:this.volume});
   }
   cueVideoById(value){return this.loadVideoById(value,false);}
+  queueNext(song){return this.request('queue-next',song?{videoId:song.id,title:song.title,artist:song.artist,album:song.album||'',artwork:song.artwork||''}:{});}
   playVideo(){return this.request('play');}
   pauseVideo(){return this.request('pause');}
   seekTo(position){return this.request('seek',{position});}

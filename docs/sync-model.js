@@ -76,6 +76,7 @@ export function libraryValues(state, catalog) {
   for(const [context,position] of Object.entries(state.collectionPositions||{}))if(validCollectionContext(context)&&remoteSong(position.songID))values['collectionPosition:'+context]=json(position);
   if(state.localPlaybackKey)values['deviceTrust:localPlayback']=state.localPlaybackKey;
   values['preference:genres'] = state.genres || [];
+  values['preference:libraryPins'] = (state.libraryPins||[]).filter(h=>/^#(?:album|playlist|folder|artist)\/[A-Za-z0-9%_.:-]+$/.test(h));
   if(state.profile){const profile=validateProfile(state.profile);if(stable(profile)!==stable(defaultProfile()))values['profile:main']=profile;}
   const albumIDs = new Set([...(state.albums || []), ...Object.values(state.releaseChoices || {}).flat(), ...(state.folders || []).flatMap(folder => folder.items.filter(item => item.kind === 'album').map(item => item.id))]);
   for (const id of albumIDs) {
@@ -120,6 +121,7 @@ export function applyLibraryValues(state, values) {
     if (artist.artwork && !isImageURL(artist.artwork)) delete artist.artwork;
     next.extraArtists[artist.id] = artist;
   }
+  next.libraryPins = Array.isArray(values['preference:libraryPins'])?values['preference:libraryPins'].filter(h=>typeof h==='string'&&/^#(?:album|playlist|folder|artist)\/[A-Za-z0-9%_.:-]+$/.test(h)):[];
   next.playlists = list('playlist').sort((a,b)=>(a.order||0)-(b.order||0)).map(playlist => {
     if (!playlist || !actorPattern.test(playlist.id) || typeof playlist.name !== 'string' || !Array.isArray(playlist.songs) || !playlist.songs.every(validID)) throw Error('A synced playlist is invalid.');
     if (playlist.artwork && !isImageURL(playlist.artwork)) delete playlist.artwork;

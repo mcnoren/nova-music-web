@@ -1,9 +1,12 @@
+import AVFoundation
 import Foundation
 import SwiftUI
 import Combine
 import Security
 import UIKit
 import PhotosUI
+import CryptoKit
+import CloudKit
 
 @MainActor
 struct MusicAccountCredentialStorage {
@@ -14,6 +17,20 @@ struct MusicAccountCredentialStorage {
 
 @MainActor
 final class MusicAccountSync: ObservableObject {
+    // Legacy providers remain available for migration and regression tests.
+    enum Backend { case icloud, github, supabase }
+    let backend: Backend
+    var usesGitHub: Bool { backend == .github }
+    var usesICloud: Bool { backend == .icloud }
+    private let localPlayback: MusicLocalPlaybackTransport
+    private var localPeers = Set<String>()
+    private var localKey: Data?
+    private let cloud: NovaCloudStorage
+    private var playbackPublishTask: Task<Void, Never>?
+    private var playbackActivityAt: Double?
+    @Published private(set) var lyricsDisplayMessage: String?
+    private var displayRequest: (target: String, id: String, at: Double)?
+    private var cloudRetryAfter = Date.distantPast
     struct User: Codable { var id: UUID; var email: String }
     struct Session: Codable {
         var access_token: String
@@ -21,6 +38,7 @@ final class MusicAccountSync: ObservableObject {
         var expires_at: Double?
         var expires_in: Double?
         var user: User
+        var repository: String? = nil
     }
     @Published private(set) var user: User?
     @Published private(set) var status = "Not signed in"
@@ -31,6 +49,7 @@ final class MusicAccountSync: ObservableObject {
     private var document = NovaSyncDocument()
     private var previous: [String:NovaSyncValue] = [:]
     private var applying = false, started = false
+    private var bootstrapTask: Task<Void, Never>?
     private var generation = UUID()
     private var task: Task<Void,Never>?, poll: Task<Void,Never>?, syncTask: Task<Void,Never>?
     private var subscriptions = Set<AnyCancellable>()
@@ -49,6 +68,9 @@ final class MusicAccountSync: ObservableObject {
     private var preparingCommand: String?, acknowledgedHandoff: String?
     private var appliedCommand: String?, lastPresence = Date.distantPast, lastStatus = Date.distantPast
     private var applyingPlayback = false, remoteMirroring = false, wasOutput = false
+    // A selection made in the car stays on this phone, including after unplugging.
+    // Only an explicit output selection can send it back to another device.
+    private(set) var carPlayOwnsOutput = false
     private var appliedLibrary: [String:NovaSyncValue]?
     private var connectionNeedsSync = true
     private var serverRevision: Double?
@@ -56,9 +78,11 @@ final class MusicAccountSync: ObservableObject {
     private let url: URL?
     private let key: String
     private let service: String
+    private var githubRetryAfter = Date.distantPast
     private let network: URLSession
     private let credentialStorage: MusicAccountCredentialStorage?
     var configured: Bool {
+        if usesGitHub || usesICloud { return true }
         guard url != nil, !key.isEmpty, !key.contains("$(") else { return false }
         if key.hasPrefix("sb_publishable_") { return true }
         let parts = key.split(separator:".")
@@ -69,56 +93,101 @@ final class MusicAccountSync: ObservableObject {
         return value["role"]?.string == "anon"
     }
 
-    init(store: YouTubeStore, network: URLSession = .shared, credentialService: String? = nil, credentialStorage: MusicAccountCredentialStorage? = nil) {
+    init(store: YouTubeStore, network: URLSession = .shared, credentialService: String? = nil, credentialStorage: MusicAccountCredentialStorage? = nil, backend: Backend = .icloud, cloud: NovaCloudStorage? = nil, localPlayback: MusicLocalPlaybackTransport? = nil) {
+        self.localPlayback = localPlayback ?? MusicLocalPlayback()
+        self.cloud = cloud ?? NovaCloudKitStorage()
+        self.backend = backend
         self.store = store
         self.network = network
         self.credentialStorage = credentialStorage
-        service = credentialService ?? (Bundle.main.bundleIdentifier ?? "NovaMusic") + ".account-sync"
+        service = credentialService ?? (Bundle.main.bundleIdentifier ?? "NovaMusic") + (backend == .github ? ".github-library-sync" : ".account-sync")
         let raw = Bundle.main.object(forInfoDictionaryKey:"NovaSyncURL") as? String ?? ""
         let candidate = URL(string:raw)
         url = candidate?.scheme == "https" && candidate?.user == nil && candidate?.password == nil ? candidate : nil
         key = Bundle.main.object(forInfoDictionaryKey:"NovaSyncPublishableKey") as? String ?? ""
         actor = store.defaults.string(forKey:"music.sync.device").flatMap(UUID.init(uuidString:)) ?? UUID()
         store.defaults.set(actor.uuidString,forKey:"music.sync.device")
+        self.localPlayback.onReceive = { [weak self] data in
+            guard let self, self.usesICloud, let incoming = try? JSONDecoder().decode(NovaSyncDocument.self, from: data),
+                  incoming.records.keys.allSatisfy({ $0.hasPrefix("connect:") }),
+                  let merged = try? self.document.merging(incoming) else { return }
+            if merged != self.document {
+                self.document = merged; self.receiveConnection(); try? self.saveDocument()
+                self.publishLocalConnection()
+            }
+        }
+        self.localPlayback.onPeersChanged = { [weak self] peers in self?.localPeers = peers; self?.receiveConnection() }
+        self.localPlayback.onError = { [weak self] message in self?.outputError = message }
+        store.player.connectedPlaybackChanged = { [weak self] in self?.schedulePlaybackPublication() }
         store.player.connectedCommand = { [weak self] action in self?.routeControl(action) ?? false }
-        Publishers.MergeMany(store.player.$loading.map { _ in () }.eraseToAnyPublisher(),store.player.$ready.map { _ in () }.eraseToAnyPublisher(),store.player.$playing.map { _ in () }.eraseToAnyPublisher(),store.player.$currentVideoID.map { _ in () }.eraseToAnyPublisher(),store.player.$trackLyrics.map { _ in () }.eraseToAnyPublisher(),store.player.$lyricCalibration.map { _ in () }.eraseToAnyPublisher())
-            .sink { [weak self] _ in self?.lastStatus = .distantPast }.store(in:&subscriptions)
+        Publishers.MergeMany(store.player.$loading.map { _ in () }.eraseToAnyPublisher(),store.player.$ready.map { _ in () }.eraseToAnyPublisher(),store.player.$playing.map { _ in () }.eraseToAnyPublisher(),store.player.$currentVideoID.map { _ in () }.eraseToAnyPublisher(),store.player.$trackLyrics.map { _ in () }.eraseToAnyPublisher(),store.player.$lyricCalibration.map { _ in () }.eraseToAnyPublisher(),store.player.$playlistIDs.map { _ in () }.eraseToAnyPublisher(),store.player.$playlistIndex.map { _ in () }.eraseToAnyPublisher(),store.player.$shuffled.map { _ in () }.eraseToAnyPublisher(),store.player.$repeatMode.map { _ in () }.eraseToAnyPublisher())
+            .sink { [weak self] _ in self?.lastStatus = .distantPast; self?.schedulePlaybackPublication() }.store(in:&subscriptions)
         store.objectWillChange.debounce(for:.milliseconds(700),scheduler:RunLoop.main).sink { [weak self] _ in
             Task { @MainActor in self?.changed() }
         }.store(in:&subscriptions)
         NotificationCenter.default.publisher(for:UserDefaults.didChangeNotification).debounce(for:.milliseconds(700),scheduler:RunLoop.main).sink { [weak self] _ in
             Task { @MainActor in self?.changed() }
         }.store(in:&subscriptions)
+        NotificationCenter.default.publisher(for: .CKAccountChanged).sink { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.usesICloud else { return }
+                self.disableICloud()
+                self.error = NovaCloudFailure.accountChanged.localizedDescription
+            }
+        }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for:UIApplication.didBecomeActiveNotification).sink { [weak self] _ in
             Task { @MainActor in await self?.sync() }
         }.store(in:&subscriptions)
     }
     func bootstrap() async {
+        if let bootstrapTask { await bootstrapTask.value; return }
+        let task = Task { await self.startAccount() }
+        bootstrapTask = task
+        await task.value
+    }
+    private func startAccount() async {
         guard !started else { return }; started = true
         guard configured else { return }
-        if let data = keychainRead(), let session = try? JSONDecoder().decode(Session.self,from:data) {
+        if usesICloud {
+            if store?.defaults.object(forKey: "music.icloud.enabled") as? Bool != false {
+                if restoreCachedLocalPlayback() {
+                    Task { [weak self] in await self?.sync() }
+                } else { do { try await enableICloud(mergeLibrary: true, automatic: true) }
+                catch { self.error = error.localizedDescription; status = "Saved on this device" } }
+            }
+        } else if let data = keychainRead(), let session = try? JSONDecoder().decode(Session.self,from:data), !usesGitHub || session.repository != nil {
             do { try await activate(session,mergeGuest:false) }
             catch { self.error = error.localizedDescription; status = "Sync needs attention" }
         }
-        connectTask = Task { [weak self] in
+        if !usesGitHub { connectTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard self != nil else { return }
                 await self?.connectTick()
-                try? await Task.sleep(for:.milliseconds(self?.connectedSnapshot?.playing == true || self?.pendingOutputID != nil || self?.playbackIntent != nil || (self?.outputDevices.count ?? 0)>1 ? 750 : 2000))
+                try? await Task.sleep(for:.milliseconds(self?.usesICloud == true ? 1500 : self?.connectedSnapshot?.playing == true || self?.pendingOutputID != nil || self?.playbackIntent != nil || (self?.outputDevices.count ?? 0)>1 ? 750 : 2000))
             }
+        }
         }
         poll = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for:.seconds(30))
+                try? await Task.sleep(for:.seconds(self?.usesGitHub == true ? 300 : 30))
                 guard !Task.isCancelled else { return }; await self?.sync()
             }
         }
+    }
+    /// Playback routing is asynchronous even when this phone is the output.
+    /// Siri must wait for the queued command before checking the audio item.
+    func waitForPendingPlayback() async throws {
+        guard !usesGitHub else { return }
+        await commandTask?.value
+        try Task.checkCancellation()
+        if let outputError { throw NovaSyncFailure.message(outputError) }
     }
     private func validateEmail(_ email: String) throws {
         guard configured else { throw NovaSyncFailure.notConfigured }
         guard email.range(of:"^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",options:.regularExpression) != nil else { throw NovaSyncFailure.message("Enter a valid email address.") }
     }
     func signIn(email: String, password: String, mergeGuest: Bool) async throws {
+        if usesGitHub { try await connectGitHub(repository: email, token: password, mergeLibrary: mergeGuest); return }
         try validateEmail(email)
         guard !password.isEmpty else { throw NovaSyncFailure.message("Enter your password.") }
         let existingID = user?.id
@@ -148,15 +217,16 @@ final class MusicAccountSync: ObservableObject {
         }
         resetConnection(); appliedLibrary = nil
         generation = UUID(); self.session = session; user = session.user
-        if self.session?.expires_at == nil { self.session?.expires_at = Date().timeIntervalSince1970 + (session.expires_in ?? 3600) }
+        if !usesGitHub, self.session?.expires_at == nil { self.session?.expires_at = Date().timeIntervalSince1970 + (session.expires_in ?? 3600) }
         try saveSession()
         if let data = store.defaults.data(forKey:cacheKey), let stored = try? JSONDecoder().decode(NovaSyncDocument.self,from:data) { try stored.validate(); document = stored }
         else { document = NovaSyncDocument() }
+        if usesGitHub { document = Self.libraryOnly(document) }
         if let guest { var values = document.values; values.merge(guest,uniquingKeysWith:{ _,new in new }); document = try document.updating(previous:document.values,next:values,actor:actor) }
         try applyCurrent(); status = "Syncing"
         await sync()
     }
-    private var cacheKey: String { "music.sync.document." + (user?.id.uuidString.lowercased() ?? "guest") }
+    private var cacheKey: String { (usesICloud ? "music.icloud.document." : usesGitHub ? "music.github.document." : "music.sync.document.") + (user?.id.uuidString.lowercased() ?? "guest") }
     private func saveDocument() throws { guard let store else { return }; store.defaults.set(try JSONEncoder().encode(document),forKey:cacheKey) }
     func changed() { captureChanges(schedule: true) }
     private func captureChanges(schedule: Bool) {
@@ -166,7 +236,7 @@ final class MusicAccountSync: ObservableObject {
             guard next != previous else { return }
             document = try document.updating(previous:previous,next:next,actor:actor); previous = next; connectionNeedsSync = true; try saveDocument()
             status = "Changes saved on this device"; error = nil
-            if schedule { task?.cancel(); task = Task { [weak self] in try? await Task.sleep(for:.milliseconds(700)); if !Task.isCancelled { await self?.sync() } } }
+            if schedule { task?.cancel(); task = Task { [weak self] in try? await Task.sleep(for:.milliseconds(self?.usesGitHub == true ? 5000 : 700)); if !Task.isCancelled { await self?.sync() } } }
         } catch { self.error = error.localizedDescription; status = "Sync needs attention" }
     }
     func sync() async {
@@ -176,6 +246,8 @@ final class MusicAccountSync: ObservableObject {
         await running.value; syncTask = nil
     }
     private func runSync() async {
+        if usesICloud { await runICloudSync(); return }
+        if usesGitHub { await runGitHubSync(); return }
         guard let user else { return }
         captureChanges(schedule: false)
         let epoch = generation, id = user.id
@@ -209,10 +281,13 @@ final class MusicAccountSync: ObservableObject {
         applying = true; defer { applying = false }
         let library = document.values.filter { !$0.key.hasPrefix("connect:") }
         if library != appliedLibrary { try MusicAccountLibrary.apply(document.values,to:store); appliedLibrary = library }
+        configureLocalPlayback()
         receiveConnection()
         previous = try MusicAccountLibrary.values(store,preserving:document.values); try saveDocument()
     }
     func signOut() async throws {
+        if usesICloud { disableICloud(); return }
+        if usesGitHub { disconnectGitHub(); return }
         changed(); await sync()
         guard error == nil, status == "Synced" else { throw NovaSyncFailure.unsyncedChanges }
         guard let store, let oldSession = session else { return }
@@ -236,7 +311,7 @@ final class MusicAccountSync: ObservableObject {
         session = refreshed; try saveSession(); return refreshed.access_token
     }
     private func request(_ path: String,method: String = "GET",body: [String:NovaSyncValue]? = nil,authenticated: Bool = false,token: String? = nil) async throws -> NovaSyncValue {
-        guard configured, let url, let endpoint = URL(string:path,relativeTo:url) else { throw NovaSyncFailure.notConfigured }
+        guard backend == .supabase, configured, let url, let endpoint = URL(string:path,relativeTo:url) else { throw NovaSyncFailure.notConfigured }
         var request = URLRequest(url:endpoint,cachePolicy:.reloadIgnoringLocalCacheData); request.httpMethod = method; request.timeoutInterval = 20
         request.setValue(key,forHTTPHeaderField:"apikey"); request.setValue("application/json",forHTTPHeaderField:"Content-Type")
         let bearer = authenticated ? try await accessToken() : token
@@ -248,6 +323,253 @@ final class MusicAccountSync: ObservableObject {
         guard (200..<300).contains(http.statusCode) else { throw NovaSyncFailure.message(http.statusCode == 401 && authenticated ? "Your session expired. Sign in again to sync." : value["msg"]?.string ?? value["message"]?.string ?? value["error_description"]?.string ?? "Sync could not finish. Your library remains saved here.") }
         return value
     }
+    private func restoreCachedLocalPlayback() -> Bool {
+        guard let store, let identity = store.defaults.string(forKey: "music.icloud.identity"), let id = UUID(uuidString: identity),
+              let data = store.defaults.data(forKey: "music.icloud.document." + identity.lowercased()),
+              let saved = try? JSONDecoder().decode(NovaSyncDocument.self, from: data),
+              let encoded = saved.values["deviceTrust:localPlayback"]?.string,
+              Data(base64Encoded: encoded)?.count == 32 else { return false }
+        do {
+            try saved.validate(); user = User(id: id, email: "iCloud")
+            document = saved.cloudPartition(connection: false); previous = document.values
+            try applyCurrent(); status = "Saved on this device"; return true
+        } catch { user = nil; document = NovaSyncDocument(); return false }
+    }
+    func enableICloud(mergeLibrary: Bool = true, automatic: Bool = false) async throws {
+        guard usesICloud, let store else { return }
+        let identity = try await cloud.accountID()
+        guard let id = UUID(uuidString: identity) else { throw NovaSyncFailure.invalidResponse }
+        let oldIdentity = store.defaults.string(forKey: "music.icloud.identity")
+        if automatic, let oldIdentity, oldIdentity != identity { throw NovaCloudFailure.accountChanged }
+        if user != nil, user?.id != id { disableICloud() }
+        generation = UUID(); resetConnection(); appliedLibrary = nil
+        user = User(id: id, email: "iCloud")
+        // Keep each account's cached edits separate; never carry device commands across launches/accounts.
+        let saved = store.defaults.data(forKey: cacheKey).flatMap { try? JSONDecoder().decode(NovaSyncDocument.self, from: $0) }
+        document = saved?.cloudPartition(connection: false) ?? NovaSyncDocument()
+        try document.validate()
+        if mergeLibrary {
+            var values = document.values
+            values.merge(try MusicAccountLibrary.values(store), uniquingKeysWith: { _, local in local })
+            document = try document.updating(previous: document.values, next: values, actor: actor)
+        }
+        previous = document.values
+        store.defaults.set(identity, forKey: "music.icloud.identity")
+        store.defaults.set(true, forKey: "music.icloud.enabled")
+        try applyCurrent()
+        await sync()
+    }
+
+    func disableICloud() {
+        guard usesICloud else { return }
+        captureChanges(schedule: false)
+        generation = UUID(); task?.cancel()
+        wasOutput = false // Disabling sync must not stop this device’s audio.
+        resetConnection(); user = nil; session = nil; appliedLibrary = nil
+        document = NovaSyncDocument(); previous = [:]
+        store?.defaults.set(false, forKey: "music.icloud.enabled")
+        status = "Saved on this device"; error = nil; lastSynced = nil
+    }
+
+    private func runICloudSync() async {
+        guard let user, Date() >= cloudRetryAfter else { return }
+        captureChanges(schedule: false)
+        let epoch = generation, id = user.id
+        status = "Syncing with iCloud"; error = nil
+        do {
+            guard try await cloud.accountID() == id.uuidString.lowercased() else { throw NovaCloudFailure.accountChanged }
+            for _ in 0..<5 {
+                let remote = try await cloud.load("nova-library")
+                try assertCurrent(epoch, id); captureChanges(schedule: false)
+                var candidate = try document.cloudPartition(connection: false).merging(remote.document.cloudPartition(connection: false))
+                if candidate.values["deviceTrust:localPlayback"]?.string.flatMap({ Data(base64Encoded: $0) })?.count != 32 {
+                    var values = candidate.values
+                    let secret = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+                    values["deviceTrust:localPlayback"] = .string(secret.base64EncodedString())
+                    candidate = try candidate.updating(previous: candidate.values, next: values, actor: actor)
+                }
+                if candidate != remote.document {
+                    do { try await cloud.save(candidate, named: "nova-library", revision: remote.revision) }
+                    catch NovaCloudFailure.conflict { continue }
+                }
+                try assertCurrent(epoch, id); captureChanges(schedule: false)
+                document = try candidate.merging(document); try applyCurrent()
+                if document.cloudPartition(connection: false) != candidate { continue }
+                status = "Synced with iCloud"; lastSynced = Date(); return
+            }
+            throw NovaCloudFailure.conflict
+        } catch {
+            guard generation == epoch else { return }
+            if case NovaCloudFailure.accountChanged = error { disableICloud() }
+            self.error = error.localizedDescription; status = "Changes saved on this device"
+            cloudRetryAfter = Date().addingTimeInterval(10)
+        }
+    }
+
+    private func configureLocalPlayback() {
+        guard usesICloud, user != nil,
+              let encoded = document.values["deviceTrust:localPlayback"]?.string,
+              let key = Data(base64Encoded: encoded), key.count == 32,
+              let payload = try? JSONEncoder().encode(document.cloudPartition(connection: true)) else { return }
+        localKey = key
+        localPlayback.start(id: deviceID, key: key, payload: payload)
+    }
+    private func publishLocalConnection() {
+        guard usesICloud, localKey != nil,
+              let payload = try? JSONEncoder().encode(document.cloudPartition(connection: true)) else { return }
+        localPlayback.publish(payload)
+    }
+    private func syncLocalConnection() async {
+        guard user != nil else { return }
+        configureLocalPlayback(); publishLocalConnection()
+        await localPlayback.refresh()
+    }
+    private func syncPlayback() async {
+        if usesICloud { await syncLocalConnection() } else { await sync() }
+    }
+
+    var gitHubRepository: String { session?.repository ?? "" }
+
+    static func validGitHubRepository(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.range(of: "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_.-]{1,100}$", options: .regularExpression) != nil,
+              let name = value.split(separator: "/").last, name != ".", name != ".." else { return nil }
+        return value
+    }
+
+    func connectGitHub(repository raw: String, token rawToken: String, mergeLibrary: Bool = true) async throws {
+        guard usesGitHub, let repository = Self.validGitHubRepository(raw) else { throw NovaSyncFailure.message("Enter the private repository as owner/name.") }
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty, token.count < 1000, !token.contains(where: \.isWhitespace) else { throw NovaSyncFailure.message("Enter a GitHub access token with Contents read and write access to this repository.") }
+        let metadata = try await githubRequest("/repos/" + repository, token: token)
+        try Self.verifyPrivateRepository(metadata)
+        guard let repositoryID = metadata["id"]?.safeInt else { throw NovaSyncFailure.invalidResponse }
+        let identity = Self.gitHubIdentity(repositoryID)
+        guard user == nil || user?.id == identity else { throw NovaSyncFailure.message("Disconnect the current repository before choosing another. Your local library will stay on this device.") }
+        let session = Session(access_token: token, refresh_token: "", user: User(id: identity, email: repository), repository: repository)
+        try await activate(session, mergeGuest: user == nil && mergeLibrary)
+    }
+
+    static func gitHubIdentity(_ id: Int) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data("github-repo:\(id)".utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50; bytes[8] = (bytes[8] & 0x3f) | 0x80
+        return UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+    }
+
+    static func verifyPrivateRepository(_ value: NovaSyncValue) throws {
+        guard value["private"] == .bool(true), value["archived"] != .bool(true), value["disabled"] != .bool(true) else {
+            throw NovaSyncFailure.message("Choose an active private GitHub repository. Nova never uploads your library to a public repository.")
+        }
+        if value["permissions"]?["push"] == .bool(false) { throw NovaSyncFailure.message("The GitHub token needs Contents read and write access to this repository.") }
+    }
+
+    static func libraryOnly(_ document: NovaSyncDocument) -> NovaSyncDocument {
+        var result = document; result.records = result.records.filter { !$0.key.hasPrefix("connect:") }; return result
+    }
+
+    func disconnectGitHub() {
+        guard usesGitHub else { return }
+        captureChanges(schedule: false)
+        generation = UUID(); task?.cancel(); task = nil
+        keychainDelete(); session = nil; user = nil; appliedLibrary = nil
+        document = NovaSyncDocument(); previous = [:]
+        status = "Saved on this device"; error = nil; lastSynced = nil
+        // Cached documents and the current library stay intact, including unsent edits.
+    }
+
+    private func runGitHubSync() async {
+        guard let session, let repository = session.repository, let user else { return }
+        captureChanges(schedule: false)
+        let epoch = generation, id = user.id
+        status = "Syncing with GitHub"; error = nil
+        do {
+            let metadata = try await githubRequest("/repos/" + repository)
+            try assertCurrent(epoch, id); try Self.verifyPrivateRepository(metadata)
+            guard metadata["id"]?.safeInt.map(Self.gitHubIdentity) == id else { throw NovaSyncFailure.accountChanged }
+            for _ in 0..<3 {
+                let path = "/repos/\(repository)/contents/nova-library.json"
+                let file = try await githubRequest(path, allowMissing: true)
+                try assertCurrent(epoch, id)
+                let sha = file["sha"]?.string
+                let remote: NovaSyncDocument
+                if sha == nil {
+                    guard file == .null else { throw NovaSyncFailure.invalidResponse }
+                    remote = NovaSyncDocument()
+                } else {
+                    guard file["type"]?.string == "file" else { throw NovaSyncFailure.invalidResponse }
+                    var encoded = file["content"]?.string
+                    if file["encoding"]?.string == "none", let sha {
+                        let blob = try await githubRequest("/repos/\(repository)/git/blobs/\(sha)")
+                        try assertCurrent(epoch, id)
+                        guard blob["encoding"]?.string == "base64", blob["sha"]?.string == sha else { throw NovaSyncFailure.invalidResponse }
+                        encoded = blob["content"]?.string
+                    } else if file["encoding"]?.string != "base64" { throw NovaSyncFailure.invalidResponse }
+                    guard let encoded, let data = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters), data.count <= 8_000_000 else { throw NovaSyncFailure.invalidDocument }
+                    let decoded = try JSONDecoder().decode(NovaSyncDocument.self, from: data); try decoded.validate()
+                    remote = Self.libraryOnly(decoded)
+                }
+                captureChanges(schedule: false)
+                let candidate = try Self.libraryOnly(document).merging(remote)
+                if candidate == remote {
+                    document = candidate; try applyCurrent(); status = "Synced with GitHub"; lastSynced = Date(); return
+                }
+                let data = try JSONEncoder().encode(candidate)
+                guard data.count <= 8_000_000 else { throw NovaSyncFailure.message("This library is too large to sync. Reduce custom artwork sizes; your edits remain saved here.") }
+                // Check privacy again immediately before writing, including on conflict retries.
+                try Self.verifyPrivateRepository(try await githubRequest("/repos/" + repository))
+                try assertCurrent(epoch, id)
+                var body: [String: NovaSyncValue] = ["message": .string("Sync Nova Music library"), "content": .string(data.base64EncodedString())]
+                if let sha { body["sha"] = .string(sha) }
+                let saved = try await githubRequest(path, method: "PUT", body: body, allowConflict: true)
+                try assertCurrent(epoch, id)
+                if saved == .null { continue }
+                guard saved["content"]?["sha"]?.string != nil else { throw NovaSyncFailure.invalidResponse }
+                captureChanges(schedule: false)
+                document = try candidate.merging(Self.libraryOnly(document)); try applyCurrent()
+                if document != candidate { continue }
+                status = "Synced with GitHub"; lastSynced = Date(); return
+            }
+            throw NovaSyncFailure.message("Another device updated the library. Your edits are saved here; sync will retry.")
+        } catch {
+            guard generation == epoch else { return }
+            self.error = error.localizedDescription; status = "Changes saved on this device"
+        }
+    }
+
+    private func githubRequest(_ path: String, method: String = "GET", body: [String: NovaSyncValue]? = nil,
+                               token: String? = nil, allowMissing: Bool = false, allowConflict: Bool = false) async throws -> NovaSyncValue {
+        guard Date() >= githubRetryAfter else { throw NovaSyncFailure.message("GitHub asked Nova to wait before syncing again. Your library remains saved here.") }
+        guard path.hasPrefix("/repos/"), !path.split(separator: "/").contains(".."), let url = URL(string: "https://api.github.com" + path),
+              url.host == "api.github.com", let token = token ?? session?.access_token else { throw NovaSyncFailure.notConfigured }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        request.httpMethod = method
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(path.contains("/contents/") ? "application/vnd.github.object+json" : "application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("NovaMusic", forHTTPHeaderField: "User-Agent")
+        if let body { request.httpBody = try JSONEncoder().encode(body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        let (data, response) = try await network.data(for: request, delegate: GitHubRedirectPolicy.shared)
+        guard let http = response as? HTTPURLResponse, http.url?.host == "api.github.com", data.count <= 16_000_000 else { throw NovaSyncFailure.invalidResponse }
+        if http.statusCode == 404 && allowMissing { return .null }
+        if [409,422].contains(http.statusCode) && allowConflict { return .null }
+        guard (200..<300).contains(http.statusCode) else {
+            if [403,429].contains(http.statusCode) {
+                let delay = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+                let reset = http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" ? http.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(Double.init) : nil
+                githubRetryAfter = max(Date().addingTimeInterval(delay ?? 60), reset.map(Date.init(timeIntervalSince1970:)) ?? .distantPast)
+            }
+            let message: String
+            switch http.statusCode {
+            case 401: message = "Your GitHub token expired or was revoked. Reconnect GitHub; your library is saved here."
+            case 403,429: message = "GitHub access is restricted or rate limited. Check repository access and try later. Your library is saved here."
+            case 404: message = "That private repository was not found. Check its owner/name and token access."
+            default: message = "GitHub could not sync right now. Your library is saved here."
+            }
+            throw NovaSyncFailure.message(message)
+        }
+        return try JSONDecoder().decode(NovaSyncValue.self, from: data)
+    }
+
     private func keychainQuery() -> [String:Any] { [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:service,kSecAttrAccount as String:"nova-account"] }
     private func keychainRead() -> Data? {
         if let credentialStorage { return credentialStorage.read() }
@@ -278,6 +600,8 @@ struct MusicAccountSyncSection: View {
     @State private var addLibrary = true
     @State private var message: String?
     var body: some View {
+        Group {
+        if account.usesICloud { MusicICloudSyncSection(account: account) } else if account.usesGitHub { MusicGitHubSyncSection(account: account) } else {
         Section("Nova Music account") {
             if let user = account.user, !reauth {
                 Text(user.email); LabeledContent("Library sync",value:account.status)
@@ -310,6 +634,8 @@ struct MusicAccountSyncSection: View {
             if working { ProgressView() }
             if let text = message ?? account.error { Text(text).font(.footnote).foregroundStyle(.secondary) }
             Text("Sync includes your library, profile picture and playlist artwork. Imported audio and playback settings remain on their original device.").font(.footnote).foregroundStyle(.secondary)
+        }
+            }
         }
     }
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
@@ -379,7 +705,7 @@ struct MusicProfileEditor: View {
                 if !draft.image.isEmpty { Button("Remove photo") { draft.image = "" } }
                 if loadingPhoto { ProgressView() }
                 if let error { Text(error).foregroundStyle(.secondary) }
-                Text(store.musicAccount.user == nil ? "Sign in to sync your icon across devices." : "Your profile is saved privately with your account and syncs across devices.").font(.footnote).foregroundStyle(.secondary)
+                Text(store.musicAccount.user == nil ? "Enable iCloud to sync your icon across devices." : "Your profile is saved privately with your account and syncs across devices.").font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("Edit profile").onAppear { draft = store.musicProfile }
             .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Save") { do { let profile = try draft.validated(); store.musicProfile = profile; store.defaults.set(try JSONEncoder().encode(profile),forKey:"music.account.profile"); store.musicAccount.changed(); dismiss() } catch { self.error = "Choose a name up to 60 characters and a smaller photo." } }.disabled(loadingPhoto) } }
@@ -407,7 +733,10 @@ extension MusicAccountSync {
         guard let value = try? document.values["connect:session"]?.decoded(MusicConnectedSession.self), value.valid else { return nil }
         return value
     }
-    var controlsRemoteOutput: Bool { user != nil && connectedSession.map { $0.owner != deviceID } == true }
+    private var activeConnection: Bool {
+        connectedSession?.isActive(status: try? document.values["connect:status"]?.decoded(MusicConnectedSnapshot.self)) == true
+    }
+    var controlsRemoteOutput: Bool { !carPlayOwnsOutput && !usesGitHub && user != nil && activeConnection && (!usesICloud || connectedSession.map { localPeers.contains($0.owner) } == true) && connectedSession.map { $0.owner != deviceID } == true }
     private var connectedSnapshot: MusicConnectedSnapshot? {
         guard let session = connectedSession else { return nil }
         var snapshot = session.snapshot
@@ -421,6 +750,7 @@ extension MusicAccountSync {
         guard user != nil else { return }
         let old = document.values; var next = old; next.merge(values,uniquingKeysWith:{ _,new in new })
         document = try document.updating(previous:old,next:next,actor:actor)
+        publishLocalConnection()
         previous.merge(values,uniquingKeysWith:{ _,new in new }); connectionNeedsSync = true; try saveDocument()
     }
     private func localSnapshot() -> MusicConnectedSnapshot {
@@ -435,6 +765,10 @@ extension MusicAccountSync {
             let lyrics = player.trackLyrics, timing = player.lyricCalibration
             snapshot.lyrics = MusicConnectedLyrics(songID:id,recordingID:player.resolvedMusicAudioID ?? id,loaded:lyrics != nil,plain:lyrics?.plainText ?? "",lines:lyrics?.lines.map { .init(time:$0.time,text:$0.text,endTime:$0.endTime) } ?? [],instrumental:lyrics?.instrumental ?? false,source:lyrics?.source ?? "Lyrics",sourceURL:lyrics?.sourceURL.absoluteString,offset:timing.offset,rate:timing.rate)
         }
+        snapshot.context = player.queueEntries.indices.contains(player.playlistIndex) ? player.currentQueueOrigin : store.musicPlaybackContext
+        snapshot.contextSongIDs = store.musicContextSongIDs
+        snapshot.queueOrigins = ids.enumerated().map { index, _ in player.queueEntries.indices.contains(index) ? player.queueEntries[index].originContext : store.musicPlaybackContext }
+        snapshot.activityAt = playbackActivityAt ?? connectedSession?.at
         snapshot.loading = player.loading || (!player.ready && !queue.isEmpty)
         return snapshot
     }
@@ -452,19 +786,56 @@ extension MusicAccountSync {
             player.connectedPendingPlaying = session.snapshot.playing
         } else { player.connectedPendingPlaying = nil }
     }
+    func activateCarPlayOutput() {
+        guard !carPlayOwnsOutput else { return }
+        carPlayOwnsOutput = true
+        commandTask?.cancel(); commandTask = nil
+        freezeTask?.cancel(); freezeTask = nil; preparingCommand = nil; acknowledgedHandoff = nil
+        outputTimeout?.cancel(); pendingOutputID = nil; outputIntent = nil
+        intentTimeout?.cancel(); playbackIntent = nil; store?.player.connectedPendingPlaying = nil
+        mirrorClockTask?.cancel(); mirrorClockTask = nil
+        if remoteMirroring {
+            applyingPlayback = true
+            store?.player.endConnectedLyrics(); store?.player.stop(); store?.current = nil
+            applyingPlayback = false; remoteMirroring = false
+        }
+        claimCarPlayOutput()
+    }
+    private func claimCarPlayOutput() {
+        outputID = deviceID; outputName = "This device"
+        guard user != nil else { return }
+        let snapshot = localSnapshot()
+        guard snapshot.valid, !snapshot.queue.isEmpty else { return }
+        let session = MusicConnectedSession(owner: deviceID, command: UUID().uuidString.lowercased(), at: Date().timeIntervalSince1970 * 1000, snapshot: snapshot)
+        do {
+            try setConnection(["connect:session": .encoded(session)])
+            appliedCommand = session.command; wasOutput = true; publishConnectionStatus()
+        } catch { outputError = error.localizedDescription }
+    }
     private func receiveConnection() {
+        guard !usesGitHub else { return }
+        if carPlayOwnsOutput, connectedSession?.owner != deviceID {
+            claimCarPlayOutput()
+            return
+        }
         if let intent = outputIntent, let status = try? document.values["connect:status"]?.decoded(MusicConnectedSnapshot.self),
            connectedSession?.command != intent.command || status.owner == intent.id && status.command == intent.command && status.handoff == nil && status.loading != true && status.playing == intent.playing {
             pendingOutputID = nil; outputIntent = nil; outputTimeout?.cancel()
         }
         updatePlaybackIntent()
         guard let store else { return }
-        outputDevices = document.values.filter { $0.key.hasPrefix("connect:device.") }.compactMap { try? $0.value.decoded(MusicConnectedDevice.self) }.filter { $0.online && UUID(uuidString:$0.id) != nil }.sorted { $0.name < $1.name }
+        outputDevices = document.values.filter { $0.key.hasPrefix("connect:device.") }.compactMap { try? $0.value.decoded(MusicConnectedDevice.self) }.filter { $0.online && UUID(uuidString:$0.id) != nil && (!usesICloud || $0.id == deviceID || localPeers.contains($0.id)) }.sorted { $0.name < $1.name }
         let session = connectedSession
-        outputID = session?.owner
+        outputID = activeConnection && (session?.owner == deviceID || controlsRemoteOutput) ? session?.owner : deviceID
         let selectedDevice = outputID.flatMap { try? document.values["connect:device." + $0]?.decoded(MusicConnectedDevice.self) }
         outputName = outputID == nil || outputID == deviceID ? "This device" : selectedDevice?.name ?? "Unavailable device"
         let isOutput = session?.owner == deviceID
+        if remoteMirroring && !controlsRemoteOutput {
+            applyingPlayback = true
+            store.player.endConnectedLyrics(); store.player.stop(); store.current = nil
+            applyingPlayback = false; remoteMirroring = false
+        }
+        receiveLyricsDisplayStatus()
         if wasOutput && !isOutput || controlsRemoteOutput && !remoteMirroring {
             applyingPlayback = true; store.player.stop(); applyingPlayback = false
         }
@@ -489,7 +860,7 @@ extension MusicAccountSync {
                         guard !Task.isCancelled, self.generation == epoch, self.connectedSession?.command == session.command, self.connectedSession?.owner == self.deviceID else { return }
                         store.player.currentTime = position
                         self.preparingCommand = nil; self.acknowledgedHandoff = handoff
-                        self.publishConnectionStatus(); await self.sync()
+                        self.publishConnectionStatus(); await self.syncPlayback()
                     } catch {
                         self.applyingPlayback = false
                         if self.generation == epoch { self.outputError = "The output could not confirm its position. Try again." }
@@ -501,15 +872,20 @@ extension MusicAccountSync {
             }
         } else if controlsRemoteOutput, let snapshot = connectedSnapshot {
             remoteMirroring = true; applyingPlayback = true; defer { applyingPlayback = false }
+            store.musicPlaybackContext=snapshot.context
+            store.musicContextSongIDs=snapshot.contextSongIDs ?? [:]
             let tracks = snapshot.queue.map(\.video), previousSong = store.current
             if store.queueVideos != tracks { store.queueVideos = tracks }; store.playingMusic = true
             store.player.musicTracks = Dictionary(tracks.map { ($0.id,$0) },uniquingKeysWith:{ _,last in last })
             store.player.mirrorConnectedPlayback(ids:tracks.map(\.id),index:snapshot.index,position:snapshot.advancedPosition(),duration:snapshot.queue.indices.contains(snapshot.index) ? snapshot.queue[snapshot.index].duration ?? 0 : 0,playing:snapshot.playing)
+            store.player.setQueueOrigins(snapshot.queueOrigins ?? Array(repeating: snapshot.context, count: tracks.count))
             store.player.shuffled = snapshot.shuffle
             store.player.repeatMode = snapshot.repeat == 0 ? .off : snapshot.repeat == 1 ? .all : .one
             store.current = tracks.indices.contains(snapshot.index) ? tracks[snapshot.index] : nil
             if let lyrics = snapshot.lyrics, lyrics.songID == store.current?.id {
                 store.player.mirrorConnectedLyrics(lyrics.track,calibration:LyricCalibration(offset:lyrics.offset,rate:lyrics.rate))
+            } else {
+                store.player.mirrorConnectedLyrics(nil,calibration:LyricCalibration())
             }
             if let song = store.current, song != previousSong { store.player.setMetadata(song) }
             if mirrorClockTask == nil {
@@ -531,16 +907,70 @@ extension MusicAccountSync {
         guard tracks.indices.contains(snapshot.index) else { store.close(); return }
         let song = tracks[snapshot.index], wasShuffled = player.shuffled
         let needsLoad = player.currentVideoID != song.id || !player.ready && !player.loading
-        if needsLoad { store.play(song,music:true,shuffle:false) }
+        if needsLoad { store.play(song,minimized:store.minimized,music:true,shuffle:false,context:snapshot.context) }
+        store.musicPlaybackContext=snapshot.context
+        store.musicContextSongIDs=snapshot.contextSongIDs ?? [:]
+        store.rememberCollectionPosition(song.id)
         store.queueVideos = tracks
         player.musicTracks = Dictionary(tracks.map { ($0.id,$0) },uniquingKeysWith:{ _,last in last })
         player.connectedQueue(tracks.map(\.id),index:snapshot.index)
+        player.setQueueOrigins(snapshot.queueOrigins ?? Array(repeating: snapshot.context, count: tracks.count))
         if !needsLoad && wasShuffled != snapshot.shuffle { player.shuffled = wasShuffled; player.toggleShuffle() }
         else { player.shuffled = snapshot.shuffle }
         player.repeatMode = snapshot.repeat == 0 ? .off : snapshot.repeat == 1 ? .all : .one
-        if let lyrics = snapshot.lyrics, lyrics.songID == song.id { player.lyricCalibration = LyricCalibration(offset:lyrics.offset,rate:lyrics.rate) }
+        if let lyrics = snapshot.lyrics, lyrics.songID == song.id {
+            if lyrics.loaded { player.mirrorConnectedLyrics(lyrics.track,calibration:LyricCalibration(offset:lyrics.offset,rate:lyrics.rate)) }
+            else { player.lyricCalibration = LyricCalibration(offset:lyrics.offset,rate:lyrics.rate) }
+        }
         if needsLoad || snapshot.positionIntent != "preserve" { player.seek(to:snapshot.position) }
         if snapshot.playing { if !player.intendsPlayback { player.play() } } else { player.pause() }
+    }
+    /// Coalesce related player mutations, then send the settled snapshot immediately.
+    /// Regular clock ticks do not enter this path, and mirrored updates cannot echo.
+    private func schedulePlaybackPublication() {
+        guard user != nil, !usesGitHub, !applyingPlayback, !remoteMirroring else { return }
+        playbackActivityAt = Date().timeIntervalSince1970 * 1000
+        playbackPublishTask?.cancel()
+        playbackPublishTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard let self, !Task.isCancelled, !self.applyingPlayback, !self.remoteMirroring else { return }
+            var snapshot = self.localSnapshot()
+            snapshot.positionIntent = "preserve"
+            guard snapshot.valid else { return }
+            if self.connectedSession?.owner != self.deviceID, !self.controlsRemoteOutput, !snapshot.queue.isEmpty {
+                let session = MusicConnectedSession(owner: self.deviceID, command: UUID().uuidString.lowercased(), at: Date().timeIntervalSince1970 * 1000, snapshot: snapshot)
+                let previousCommand = self.appliedCommand, previouslyOutput = self.wasOutput
+                // Claim this already-running engine before publishing; a local
+                // loopback must never reapply its loading/paused startup sample.
+                self.appliedCommand = session.command; self.wasOutput = true
+                do { try self.setConnection(["connect:session": .encoded(session)]) }
+                catch {
+                    self.appliedCommand = previousCommand; self.wasOutput = previouslyOutput
+                    self.outputError = error.localizedDescription; return
+                }
+            }
+            self.publishConnectionStatus()
+            await self.syncPlayback()
+        }
+    }
+    func showLyricsOnMac(_ id: String) {
+        guard outputDevices.contains(where: { $0.id == id && $0.online && $0.capabilities?.contains("lyricsDisplay") == true }) else {
+            lyricsDisplayMessage = "Open the updated Nova Music app on your Mac first."; return
+        }
+        let requestID = UUID().uuidString.lowercased(), at = Date().timeIntervalSince1970 * 1000
+        do {
+            try setConnection(["connect:display." + id: .object(["id": .string(requestID), "target": .string(id), "action": .string("lyrics"), "at": .number(at)])])
+            displayRequest = (id, requestID, at); lyricsDisplayMessage = "Opening lyrics on Mac…"
+            Task { await syncPlayback() }
+        } catch { lyricsDisplayMessage = error.localizedDescription }
+    }
+    private func receiveLyricsDisplayStatus() {
+        guard let request = displayRequest else { return }
+        if let status = document.values["connect:display-status." + request.target], status["id"]?.string == request.id {
+            lyricsDisplayMessage = "Lyrics opened on Mac"; displayRequest = nil
+        } else if Date().timeIntervalSince1970 * 1000 - request.at > 30000 {
+            lyricsDisplayMessage = "The Mac did not respond. Make sure it is awake and Nova Music is running."; displayRequest = nil
+        }
     }
     private func publishConnectionStatus() {
         guard preparingCommand == nil, let session = connectedSession, session.owner == deviceID, session.command == appliedCommand else { return }
@@ -548,8 +978,10 @@ extension MusicAccountSync {
         snapshot.owner = deviceID; snapshot.command = appliedCommand; snapshot.handoff = acknowledgedHandoff
         try? setConnection(["connect:status":.encoded(snapshot)])
     }
-    fileprivate func connectTick() async {
+    func connectTick() async {
+        guard !usesGitHub else { return }
         guard user != nil else { return }
+        if usesICloud, UIApplication.shared.applicationState != .active, store?.player.playing != true { return }
         let now = Date()
         if now.timeIntervalSince(lastPresence) > 15 {
             lastPresence = now
@@ -557,6 +989,21 @@ extension MusicAccountSync {
             try? setConnection(["connect:device." + deviceID:.encoded(device)])
         }
         if now.timeIntervalSince(lastStatus) > 5 { lastStatus = now; publishConnectionStatus() }
+        if usesICloud {
+            await syncLocalConnection()
+            if outputError == nil, connectedSession == nil, store?.playingMusic == true {
+                let snapshot = localSnapshot()
+                if snapshot.valid, snapshot.playing, !snapshot.queue.isEmpty {
+                    let session = MusicConnectedSession(owner: deviceID, command: UUID().uuidString.lowercased(), at: now.timeIntervalSince1970 * 1000, snapshot: snapshot)
+                    do {
+                        try setConnection(["connect:session": .encoded(session)])
+                        appliedCommand = session.command; wasOutput = true; publishConnectionStatus()
+                        await syncLocalConnection()
+                    } catch { outputError = error.localizedDescription }
+                }
+            }
+            return
+        }
         if connectionNeedsSync || serverRevision == nil || error != nil { await sync(); return }
         let epoch = generation, id = user!.id
         do {
@@ -572,6 +1019,9 @@ extension MusicAccountSync {
         } catch { if generation == epoch { outputError = "Could not reach your output devices. Check your connection." } }
     }
     private func resetConnection() {
+        localKey = nil; localPeers = []; localPlayback.stop()
+        playbackPublishTask?.cancel(); playbackPublishTask = nil; playbackActivityAt = nil
+        displayRequest = nil; lyricsDisplayMessage = nil
         outputTimeout?.cancel(); pendingOutputID = nil; outputIntent = nil
         mirrorClockTask?.cancel(); mirrorClockTask = nil
         intentTimeout?.cancel(); playbackIntent = nil; store?.player.connectedPendingPlaying = nil
@@ -587,12 +1037,12 @@ extension MusicAccountSync {
         commandTask = Task { [weak self] in
             await preceding?.value
             guard let self, !Task.isCancelled, self.generation == epoch else { return }
-            await self.sync()
+            await self.syncPlayback()
             guard !Task.isCancelled, self.generation == epoch else { return }
             var eagerCommand: String?
             do {
-                guard self.error == nil else { throw NovaSyncFailure.message("Could not reach your devices. Check your connection.") }
-                let owner = output ?? self.connectedSession?.owner ?? self.deviceID
+                guard (self.usesICloud ? self.outputError == nil : self.error == nil) else { throw NovaSyncFailure.message("Could not reach your devices. Check your connection.") }
+                let owner = output ?? (self.controlsRemoteOutput ? self.connectedSession?.owner : nil) ?? self.deviceID
                 if owner != self.deviceID && !self.outputDevices.contains(where:{ $0.id == owner && $0.online }) { throw NovaSyncFailure.message("That device is unavailable. Choose an output location.") }
                 var frozen: MusicConnectedSnapshot?
                 if transfer, let old = self.connectedSession, old.owner != owner {
@@ -610,22 +1060,23 @@ extension MusicAccountSync {
                         let handoff = UUID().uuidString.lowercased()
                         request.handoff = handoff; request.playing = false
                         let freeze = MusicConnectedSession(owner:old.owner,command:UUID().uuidString.lowercased(),at:Date().timeIntervalSince1970 * 1000,snapshot:request)
-                        try self.setConnection(["connect:session":.encoded(freeze)]); await self.sync()
-                        let deadline = Date().addingTimeInterval(4)
+                        try self.setConnection(["connect:session":.encoded(freeze)]); await self.syncPlayback()
+                        let deadline = Date().addingTimeInterval(self.usesICloud ? 5 : 4)
                         while Date() < deadline {
                             guard !Task.isCancelled, self.generation == epoch else { return }
                             guard self.connectedSession?.command == freeze.command else { throw NovaSyncFailure.message("Playback changed during transfer. Choose the output again.") }
                             if var status = try? self.document.values["connect:status"]?.decoded(MusicConnectedSnapshot.self), status.valid, status.owner == old.owner, status.command == freeze.command, status.handoff == handoff, !status.playing {
                                 status.playing = wasPlaying; status.handoff = nil; frozen = status; break
                             }
-                            try await Task.sleep(for:.milliseconds(250)); await self.sync()
+                            try await Task.sleep(for:.milliseconds(self.usesICloud ? 25 : 250)); await self.syncPlayback()
                         }
                         guard self.connectedSession?.command == freeze.command else { throw NovaSyncFailure.message("Playback changed during transfer. Choose the output again.") }
+                        if frozen == nil, self.usesICloud { throw NovaSyncFailure.message("The previous output did not confirm its position. Keep both apps open and try the transfer again.") }
                         if frozen == nil { var recovery = checkpoint; recovery.playing = wasPlaying; recovery.handoff = nil; frozen = recovery }
                     }
                 }
-                guard self.error == nil else { throw NovaSyncFailure.message("Could not reach your devices. Check your connection.") }
-                var next = frozen ?? change(self.connectedSession?.owner == self.deviceID && self.appliedCommand == self.connectedSession?.command ? self.localSnapshot() : self.connectedSnapshot ?? self.localSnapshot()); next.at = Date().timeIntervalSince1970 * 1000
+                guard (self.usesICloud ? self.outputError == nil : self.error == nil) else { throw NovaSyncFailure.message("Could not reach your devices. Check your connection.") }
+                var next = frozen ?? change(self.connectedSession?.owner == self.deviceID && self.appliedCommand == self.connectedSession?.command ? self.localSnapshot() : self.connectedSnapshot ?? self.localSnapshot()); next.at = Date().timeIntervalSince1970 * 1000; next.activityAt = next.at
                 guard next.valid else { throw NovaSyncFailure.message("This queue cannot be played across devices.") }
                 let session = MusicConnectedSession(owner:owner,command:UUID().uuidString.lowercased(),at:Date().timeIntervalSince1970 * 1000,snapshot:next)
                 if let intentID, self.playbackIntent?.id == intentID { self.playbackIntent?.command = session.command }
@@ -634,9 +1085,9 @@ extension MusicAccountSync {
                 // The latest ownership read is complete; prepare our local engine
                 // while the account write is delivered, rather than waiting for it.
                 if owner == self.deviceID { eagerCommand = session.command; self.receiveConnection() }
-                await self.sync()
+                await self.syncPlayback()
                 guard self.generation == epoch else { return }
-                if self.error != nil { throw NovaSyncFailure.message("Playback change could not be sent. Check your connection.") }
+                if (self.usesICloud ? self.outputError != nil : self.error != nil) { throw NovaSyncFailure.message("Playback change could not be sent. Check your connection.") }
                 self.outputError = nil
             } catch {
                 self.applyingPlayback = false
@@ -648,6 +1099,8 @@ extension MusicAccountSync {
         }
     }
     func selectOutput(_ id: String) {
+        guard !usesGitHub else { return }
+        carPlayOwnsOutput = false
         guard id != connectedSession?.owner else { return }
         pendingOutputID = id; outputIntent = nil; outputError = nil; outputTimeout?.cancel()
         outputTimeout = Task { [weak self] in
@@ -656,25 +1109,27 @@ extension MusicAccountSync {
         }
         sendPlayback(output:id,transfer:true) { $0 }
     }
-    func routePlay(_ song: YouTubeVideo, queue: [YouTubeVideo], shuffle: Bool?) -> Bool {
-        guard user != nil, !applyingPlayback else { return false }
+    func routePlay(_ song: YouTubeVideo, queue: [YouTubeVideo], shuffle: Bool?, context: String? = nil) -> Bool {
+        guard !carPlayOwnsOutput, !usesGitHub, user != nil, !applyingPlayback else { return false }
+        if usesICloud && !controlsRemoteOutput { return false }
         let tracks = queue.contains(where:{ $0.id == song.id }) ? queue : [song]
-        sendPlayback { current in MusicConnectedSnapshot(queue:tracks.map(MusicConnectedSong.init),index:tracks.firstIndex { $0.id == song.id } ?? 0,playing:true,shuffle:shuffle ?? current.shuffle,repeat:current.repeat) }
+        sendPlayback { current in MusicConnectedSnapshot(queue:tracks.map(MusicConnectedSong.init),index:tracks.firstIndex { $0.id == song.id } ?? 0,playing:true,shuffle:shuffle ?? current.shuffle,repeat:current.repeat,context:context,queueOrigins:Array(repeating:context,count:tracks.count)) }
         return true
     }
     func routePlaylist(_ playlist: YouTubePlaylist,index: Int,shuffle: Bool?) -> Bool {
-        guard user != nil, !applyingPlayback else { return false }
+        guard !carPlayOwnsOutput, !usesGitHub, user != nil, !applyingPlayback else { return false }
+        if usesICloud && !controlsRemoteOutput { return false }
         store?.refreshSmartPlaylists()
         let playlist = playlist.smartRules == nil ? playlist : store?.playlist(playlist.id) ?? playlist
         if playlist.videos.isEmpty, let id = playlist.youtubePlaylistID {
             let epoch = generation
             Task { [weak self] in
-                do { let tracks = try await YouTubeAPI.musicRankedSongs(id); guard let self, self.generation == epoch, !tracks.isEmpty else { return }; _ = self.routePlay(tracks[min(max(0,index),tracks.count - 1)],queue:tracks,shuffle:shuffle) }
+                do { let tracks = try await YouTubeAPI.musicRankedSongs(id); guard let self, self.generation == epoch, !tracks.isEmpty else { return }; _ = self.routePlay(tracks[min(max(0,index),tracks.count - 1)],queue:tracks,shuffle:shuffle,context:"playlist:" + playlist.id.uuidString.lowercased()) }
                 catch { self?.store?.musicActionError = error.localizedDescription }
             }
         } else if !playlist.videos.isEmpty {
             let index = shuffle == true ? playlist.videos.indices.randomElement() ?? 0 : min(max(0,index),playlist.videos.count - 1)
-            _ = routePlay(playlist.videos[index],queue:playlist.videos,shuffle:shuffle)
+            _ = routePlay(playlist.videos[index],queue:playlist.videos,shuffle:shuffle,context:"playlist:" + playlist.id.uuidString.lowercased())
         }
         return true
     }
@@ -695,8 +1150,11 @@ extension MusicAccountSync {
             }
         }
         let known = store?.player.musicTracks ?? [:]
+        let origin = store?.player.pendingEnqueueOrigin
+        let shuffleAddition = store?.player.pendingEnqueueShuffle ?? false
         sendPlayback(intentID:intentID) { current in
             var next = current; next.position = current.advancedPosition(); next.positionIntent = "preserve"
+            next.queueOrigins = current.queueOrigins ?? Array(repeating: current.context, count: current.queue.count)
             switch action {
             case .play: next.playing = true
             case .pause: next.playing = false
@@ -710,18 +1168,22 @@ extension MusicAccountSync {
                 if next.position > 3 { next.position = 0 } else { next.index = max(0,next.index - 1); next.position = 0 }
             case .shuffle: next.shuffle.toggle()
             case .repeatMode: next.repeat = (next.repeat + 1) % 3
-            case .stop: next.queue = []; next.index = 0; next.position = 0; next.playing = false
+            case .stop: next.queue = []; next.queueOrigins = []; next.index = 0; next.position = 0; next.playing = false
             case .enqueue(let ids,let immediate):
-                let songs = ids.compactMap { known[$0].map(MusicConnectedSong.init) }
-                next.queue.insert(contentsOf:songs,at:immediate ? min(next.index + 1,next.queue.count) : next.queue.count)
-            case .clear: next.queue = Array(next.queue.prefix(next.index + 1))
+                let songs = (shuffleAddition ? ids.shuffled() : ids).compactMap { known[$0].map(MusicConnectedSong.init) }
+                let insertion = immediate ? min(next.index + 1,next.queue.count) : next.queue.count
+                next.queue.insert(contentsOf:songs,at:insertion)
+                next.queueOrigins?.insert(contentsOf:Array(repeating:origin,count:songs.count),at:insertion)
+            case .clear: next.queue = Array(next.queue.prefix(next.index + 1)); next.queueOrigins = next.queueOrigins.map { Array($0.prefix(next.index + 1)) }
             case .remove(let offsets):
-                for offset in offsets.sorted(by:>) { let index = next.index + 1 + offset; if next.queue.indices.contains(index) { next.queue.remove(at:index) } }
+                for offset in offsets.sorted(by:>) { let index = next.index + 1 + offset; if next.queue.indices.contains(index) { next.queue.remove(at:index); next.queueOrigins?.remove(at:index) } }
             case .move(let offsets,let destination):
                 var tail = Array(next.queue.dropFirst(next.index + 1))
-                if offsets.allSatisfy({ tail.indices.contains($0) }) && (0...tail.count).contains(destination) { tail.move(fromOffsets:offsets,toOffset:destination); next.queue = Array(next.queue.prefix(next.index + 1)) + tail }
+                if offsets.allSatisfy({ tail.indices.contains($0) }) && (0...tail.count).contains(destination) { tail.move(fromOffsets:offsets,toOffset:destination); next.queue = Array(next.queue.prefix(next.index + 1)) + tail
+                    if var origins = next.queueOrigins { var originTail = Array(origins.dropFirst(next.index + 1)); originTail.move(fromOffsets:offsets,toOffset:destination); origins = Array(origins.prefix(next.index + 1)) + originTail; next.queueOrigins = origins } }
             case .entry(let index): if next.queue.indices.contains(index) { next.positionIntent = "seek"; next.index = index; next.position = 0; next.playing = true }
             }
+            if let origins = next.queueOrigins, origins.indices.contains(next.index) { next.context = origins[next.index] }
             return next
         }
         return true
@@ -731,30 +1193,59 @@ extension MusicAccountSync {
 struct MusicOutputButton: View {
     @ObservedObject var account: MusicAccountSync
     @State private var showing = false
+    @State private var routeIcon = "iphone"
+    private func deviceIcon(_ name: String) -> String {
+        let name = name.lowercased()
+        if name.contains("ipad") { return "ipad" }
+        if name.contains("iphone") || name.contains("phone") { return "iphone" }
+        if name.contains("mac") || name.contains("computer") || name.contains("browser") { return "desktopcomputer" }
+        if name.contains("airpod") { return "airpodspro" }
+        if name.contains("headphone") { return "headphones" }
+        return "hifispeaker.fill"
+    }
+    private func updateRouteIcon() {
+        let ports = AVAudioSession.sharedInstance().currentRoute.outputs
+        if ports.contains(where: { $0.portType == .headphones || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE }) { routeIcon = "headphones" }
+        else if ports.contains(where: { $0.portType == .airPlay }) { routeIcon = "airplay.audio" }
+        else { routeIcon = UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone" }
+    }
     var body: some View {
         Button { showing = true } label: {
-            Image(systemName:account.controlsRemoteOutput ? "hifispeaker.fill" : "hifispeaker").frame(width:36,height:44)
+            Image(systemName:account.controlsRemoteOutput ? deviceIcon(account.outputName) : routeIcon).frame(width:36,height:44)
                 .foregroundStyle(account.controlsRemoteOutput ? Color.green : Color.primary)
         }.accessibilityLabel("Output location").accessibilityValue(account.outputName)
+        .onAppear { updateRouteIcon() }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in updateRouteIcon() }
         .sheet(isPresented:$showing) {
             NavigationStack {
                 List {
                     Section("Playing on") {
-                        if account.user == nil { Text("Sign in to the same Nova Music account on both devices to connect playback.") }
+                        if account.user == nil { Text("Enable iCloud with the same Apple Account on both devices to connect playback.") }
                         Button { account.selectOutput(account.deviceID) } label: {
                             HStack { Label("This device",systemImage:"iphone"); Spacer(); if account.pendingOutputID == account.deviceID { ProgressView().accessibilityLabel("Connecting speaker") } else if account.outputID == account.deviceID || account.outputID == nil { Image(systemName:"checkmark").accessibilityLabel("Selected") } }
                         }.disabled(account.user == nil || account.pendingOutputID != nil)
                         ForEach(account.outputDevices.filter { $0.id != account.deviceID }) { device in
                             Button { account.selectOutput(device.id) } label: {
-                                HStack { Label(device.name,systemImage:"desktopcomputer"); Spacer(); if account.pendingOutputID == device.id { ProgressView().accessibilityLabel("Connecting speaker") } else if account.outputID == device.id { Image(systemName:"checkmark").accessibilityLabel("Selected") } }
+                                HStack { Label(device.name,systemImage:deviceIcon(device.name)); Spacer(); if account.pendingOutputID == device.id { ProgressView().accessibilityLabel("Connecting speaker") } else if account.outputID == device.id { Image(systemName:"checkmark").accessibilityLabel("Selected") } }
                             }.disabled(account.pendingOutputID != nil)
                         }
                         if let id = account.outputID, id != account.deviceID, !account.outputDevices.contains(where:{ $0.id == id }) {
                             HStack { Text("\(account.outputName) · unavailable"); Spacer(); Image(systemName:"checkmark").accessibilityLabel("Selected") }.foregroundStyle(.secondary)
                         }
-                        if account.user != nil && account.outputDevices.count < 2 { Text("Open Nova Music on your other device to see it here.").foregroundStyle(.secondary) }
+                        if account.user != nil && account.outputDevices.count < 2 { Text("Open Nova Music on the same Wi-Fi network to see it here.").foregroundStyle(.secondary) }
                         if let error = account.outputError { Text(error).foregroundStyle(.red) }
                         Text("Current output: \(account.outputName)").font(.footnote)
+                    }
+                    Section("Lyrics on Mac") {
+                        ForEach(account.outputDevices.filter { $0.capabilities?.contains("lyricsDisplay") == true }) { device in
+                            Button { account.showLyricsOnMac(device.id) } label: {
+                                Label("Show lyrics on " + device.name, systemImage: "text.quote")
+                            }
+                        }
+                        if !account.outputDevices.contains(where: { $0.capabilities?.contains("lyricsDisplay") == true }) {
+                            Text("Leave Nova Music running on your Mac to open its lyrics display here.").foregroundStyle(.secondary)
+                        }
+                        if let message = account.lyricsDisplayMessage { Text(message).font(.footnote).accessibilityAddTraits(.updatesFrequently) }
                     }
                     Section("Speakers and headphones") {
                         HStack { Text("AirPlay and Bluetooth"); Spacer(); AudioRoutePicker().frame(width:40,height:40) }
@@ -764,5 +1255,89 @@ struct MusicOutputButton: View {
                     .task { await account.connectTick() }
             }.presentationDetents([.medium,.large])
         }
+    }
+}
+
+struct MusicGitHubSyncSection: View {
+    @ObservedObject var account: MusicAccountSync
+    @State private var repository = ""
+    @State private var token = ""
+    @State private var reconnecting = false
+    @State private var mergeLibrary = true
+    @State private var working = false
+    @State private var message: String?
+    var body: some View {
+        Section("Private GitHub library sync") {
+            if account.user != nil && !reconnecting {
+                Text(account.gitHubRepository).textSelection(.enabled)
+                LabeledContent("Library", value: account.status)
+                if let date = account.lastSynced { Text("Last synced \(date.formatted(date: .abbreviated, time: .shortened))").font(.footnote).foregroundStyle(.secondary) }
+                Button("Sync now") { Task { working = true; await account.sync(); working = false } }.disabled(working)
+                Button("Update GitHub token") { repository = account.gitHubRepository; reconnecting = true }.disabled(working)
+                Button("Disconnect GitHub") { account.disconnectGitHub() }.disabled(working)
+            } else {
+                Text("Use the same private repository on each device. Your current library stays available while GitHub is offline.").font(.footnote).foregroundStyle(.secondary)
+                TextField("owner/repository", text: $repository).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(working || reconnecting)
+                SecureField("GitHub access token", text: $token).textInputAutocapitalization(.never).autocorrectionDisabled().disabled(working)
+                if !reconnecting { Toggle("Add this device’s library", isOn: $mergeLibrary).disabled(working) }
+                Button(reconnecting ? "Update token" : "Connect GitHub") {
+                    working = true; message = nil
+                    Task {
+                        do { try await account.connectGitHub(repository: repository, token: token, mergeLibrary: !reconnecting && mergeLibrary); reconnecting = false }
+                        catch { message = error.localizedDescription }
+                        token = ""; working = false
+                    }
+                }.disabled(working || token.isEmpty || repository.isEmpty)
+                if reconnecting { Button("Cancel") { reconnecting = false; token = "" }.disabled(working) }
+                Link("Create a private repository", destination: URL(string: "https://github.com/new")!)
+                Link("Create an access token", destination: URL(string: "https://github.com/settings/personal-access-tokens/new?name=Nova%20Music&contents=write")!)
+                Text("Choose a private repository and give a fine-grained token access only to that repository, with Contents set to Read and write. Enter the token here, never in a public repository.").font(.footnote).foregroundStyle(.secondary)
+            }
+            if working { ProgressView() }
+            if let error = message ?? account.error { Text(error).font(.footnote).foregroundStyle(.secondary) }
+            Text("Syncs library metadata and custom artwork. Imported audio stays on its original device. Tokens are saved in this device’s Keychain. Disconnecting keeps your library and unsent edits here. Playback and AirPlay work without GitHub; live device controls have been removed.").font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+}
+
+
+private final class GitHubRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = GitHubRedirectPolicy()
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        guard request.url?.scheme == "https", request.url?.host == "api.github.com", request.url?.user == nil else {
+            completionHandler(nil); return
+        }
+        completionHandler(request)
+    }
+}
+
+struct MusicICloudSyncSection: View {
+    @ObservedObject var account: MusicAccountSync
+    @State private var working = false
+    @State private var addLibrary = true
+    @State private var message: String?
+    var body: some View {
+        Section("iCloud sync") {
+            LabeledContent("Library", value: account.status)
+            if account.user != nil {
+                Button("Sync now") { Task { working = true; await account.sync(); working = false } }.disabled(working)
+                Button("Turn off iCloud sync") { account.disableICloud() }.disabled(working)
+            } else {
+                Toggle("Add this device’s library to iCloud", isOn: $addLibrary)
+                Button("Enable iCloud sync") {
+                    Task {
+                        working = true; defer { working = false }
+                        do { try await account.enableICloud(mergeLibrary: addLibrary); message = nil }
+                        catch { message = error.localizedDescription }
+                    }
+                }.disabled(working)
+            }
+            if working { ProgressView() }
+            if let message = message ?? account.error { Text(message).foregroundStyle(.secondary) }
+            if let date = account.lastSynced { Text("Last synced \(date.formatted(date: .omitted, time: .shortened))").font(.footnote) }
+            Text("Your library, playlists, profile and artwork sync privately through iCloud. Open Nova Music on both devices to share playback, queues and lyrics using Output Location. Imported audio stays on its original device. Now Playing connects directly over your local Wi-Fi network. Allow Local Network access on both devices.").font(.footnote).foregroundStyle(.secondary)
+            Text("Turning off sync keeps your library here and in iCloud.").font(.footnote).foregroundStyle(.secondary)
+        }.onAppear { if account.error == NovaCloudFailure.accountChanged.localizedDescription { addLibrary = false } }
     }
 }

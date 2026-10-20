@@ -1,20 +1,33 @@
-# Nova Music native account integration
+# Folder and output updates (October 20, 2026)
 
-These files are copies of the implementation integrated into the Nova Music app in the parent workspace. Configure the same public Supabase URL/key as the website before rebuilding. See the repository README for the database migration and email/password setup.
+The full iPhone Xcode project lives beside this repository. Apply `patches/folder-ui.patch` from that project's root (`git apply /path/to/nova-music-web/native/patches/folder-ui.patch`) to update `NovaBrowser/MusicLibraryOrganization.swift` and `NovaBrowser/MusicLibraryViews.swift`. Copy the updated MusicAccount integration files from this directory into the corresponding app target. Add `FolderOrganizationTests.swift` to its test target.
 
-For another copy of the native app:
+Folders now support mixed-item drag ordering, gallery/list views, and replacement sheets that preserve the item's slot and pin. The MusicAccount adapters preserve this order and view through native/web sync. The output button uses device/route icons and green for remote output.
 
-1. Add the three `MusicAccount*.swift` files to the **NovaMusic** target's Sources. They use existing `YouTubeStore`, `YouTubeVideo`, `YouTubeMusicAlbum`, `YouTubeChannel`, playlist and folder models; they are not standalone applications.
-2. Add `SyncConfiguration.xcconfig` beside the app's existing configuration, and include it with `#include? "SyncConfiguration.xcconfig"` in `SpotifyConfiguration.xcconfig`.
-3. Add Info.plist strings `NovaSyncURL` = `$(NOVA_SYNC_URL)` and `NovaSyncPublishableKey` = `$(NOVA_SYNC_PUBLISHABLE_KEY)`.
-4. In `YouTubeStore`, under `#if NOVA_MUSIC`, add `lazy var musicAccount = MusicAccountSync(store: self)`.
-5. Add `MusicAccountSyncSection(account: store.musicAccount)` to the music Settings form under `#if NOVA_MUSIC` and `if musicOnly`.
-6. In `NovaMusicApp`'s main view, add `.task { await MusicPlaybackSession.store.musicAccount.bootstrap() }`.
-7. Add `MusicAccountSyncTests.swift` to the NovaMusicTests target to run the account-format tests.
+The shared web and Mac interface contains the corresponding folder controls. The Mac engine queues the next AVPlayerItem before the current track ends. Browser handoff and guaranteed gapless browser playback remain open: the browser cannot use the native LAN transport. Website CloudKit authentication also requires a working container API token.
 
-The app stores access/refresh tokens in Keychain with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Library metadata and offline pending changes are cached in app preferences. This does not encrypt library metadata end to end. Reauthentication uses the current account and retains its pending changes; sign-out restores the saved guest library after successful sync.
+Browser library and imported-audio data now stay in tab memory until cloud sync. Unsynced browser changes and imported audio are lost when the tab closes. Existing browser library data is read for migration and is not deleted.
 
-The configured project is shared with the live website. Email confirmation/reset links open the website; afterward sign into the native app with your email and password. The built-in mail service is limited to project-team addresses until custom SMTP is configured.
+Validation: 159 web tests, three focused iOS tests (including folder serialization), and iOS/Mac builds passed. A native AVFoundation test confirmed advancement to a prepared next item without a page load command.
 
+---
 
-Profile update: `YouTubeStore` now owns a published `MusicAccountProfile`, restored from `music.account.profile` defaults. Account application validates the profile before changing the library. `MusicProfileAccountButton(store:)` opens the account sheet and profile editor, including the system photo picker. The integrated app places this control beside Settings in its music header. Another native checkout must add the same store property/restore code before adopting the updated account files. The shared search changes live in `NovaBrowser/YouTubeStore.swift`, `MusicMetadata.swift` and `YouTubeView.swift` in the working app, with regression tests in `NovaMusicTests/NovaMusicTests.swift`.
+> **Local-network Now Playing (October 18, 2026):** Phone and native Mac playback controls, song/queue state, seeks, shared lyrics and display-opening requests now travel directly over persistent encrypted TCP connections discovered with Bonjour on the same Wi-Fi/local network. The playback path no longer reads or writes the private CloudKit connection record. iCloud remains responsible for the library and for provisioning a random private device-trust key once; cached trust restores local connectivity without waiting for iCloud. Allow Local Network access on both apps. The phone full-screen player uses the same Output Location selector as Home, with AirPlay/Bluetooth available inside it. Earlier iCloud playback notes below are historical.
+
+# Nova Music iCloud integration
+
+The current native app defaults to iCloud. Include `MusicLocalPlayback.swift` and `NovaCloudLibrary.swift` alongside `MusicAccountSync.swift`, `MusicAccountSyncCore.swift`, and `MusicAccountLibrary.swift`. All participating native apps must be provisioned for the same `iCloud.com.example.NovaMusic` CloudKit container.
+
+Library metadata, custom artwork, profiles and collection positions use the private `nova-library` record. Device presence, playback commands, queue state and shared lyrics use the separate private `nova-connection` record. Both use the `NovaDocument` record type with a `document` Asset field. Local playback never waits for cloud sync. Imported audio stays local. Remote playback requires both apps to be running and may take a few seconds. Transfers require a matching clock acknowledgement from the previous reachable output.
+
+See `../../outputs/nova-music-icloud-sync/README.md` for provisioning and release steps. Legacy GitHub and Supabase implementations remain for migration/reference and tests; they are not the app default.
+
+## Historical GitHub integration notes
+
+# Nova Music native GitHub library integration
+
+The helper now defaults to private GitHub repository library sync. Add the MusicAccount*.swift files to the NovaMusic target, retain YouTubeStore.musicAccount and its bootstrap task, and show MusicAccountSyncSection in Account/Settings. It uses existing app models and the system AirPlay picker; these are integration helpers, not a standalone app.
+
+No Supabase project configuration is required by the default provider. Open Account, create a private repository and a fine-grained token restricted to it with Contents: Read and write, and enter owner/repository plus the token. Keep Add this device’s library enabled to merge existing music. Tokens stay in device Keychain; library metadata/custom artwork goes to nova-library.json. Imported audio stays local. Disconnect preserves current music and cached unsent edits. GitHub library sync never routes Play through the network. Live device controls and presence polling are disabled. The retired provider remains for compatibility tests only.
+
+The parent Nova Music app additionally has bounded native playback-stall recovery in YouTubePlayer.swift. Existing applications must update their player separately to get that behavior. The website uses docs/github-sync-client.js with the same library record format.

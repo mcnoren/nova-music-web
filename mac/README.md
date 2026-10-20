@@ -1,3 +1,44 @@
+> **Local-network Now Playing (October 18, 2026):** Phone and native Mac playback controls, song/queue state, seeks, shared lyrics and display-opening requests now travel directly over persistent encrypted TCP connections discovered with Bonjour on the same Wi-Fi/local network. The playback path no longer reads or writes the private CloudKit connection record. iCloud remains responsible for the library and for provisioning a random private device-trust key once; cached trust restores local connectivity without waiting for iCloud. Allow Local Network access on both apps. The phone full-screen player uses the same Output Location selector as Home, with AirPlay/Bluetooth available inside it. Earlier iCloud playback notes below are historical.
+
+> **Connected playback update (October 18, 2026):** Song, queue and transport changes and completed seeks now publish immediately; playback ticks use the existing heartbeat. Phone and Mac share one audio output and both can control it. A paused session without activity for 90 seconds no longer keeps a different device selected. A live output with fresh playing telemetry stays selected. Changes made during a CloudKit asset write are drained in the same exchange. Cloud delivery still depends on iCloud and network latency.
+
+The iPhone **Output location → Lyrics on Mac** section offers **Show lyrics on Mac · Nova Music** for updated online Macs. This sends a separate display request and does not transfer audio. The Mac acknowledges the request, brings its window forward, and opens native full-screen lyrics. Requests expire after one minute and are consumed once, so reconnecting does not unexpectedly reopen an old request. Close the Mac window to leave Nova Music in the background; its menu-bar icon can reopen the window or lyrics. **Quit** stops the listener, and a sleeping Mac must be awakened first.
+
+> **Verified working standalone build (October 18, 2026):** `~/Applications/Nova Music iCloud.app` is developer-signed, bundles the current website interface, and starts its own loopback-only interface server. It does not require the temporary preview server or a public CloudKit web token. Native library sync succeeded, the existing profile/playlists/folders/liked songs loaded, and the phone’s playback state appeared in the Mac UI. Apple’s earlier bundle/container rejection resolved after provisioning became active; the existing portal assignment was already correct. This build uses the shared **Development** CloudKit environment, matching the tested phone build. The older status notes below are historical.
+
+## Standalone iCloud build
+
+Signed builds without `--preview-url` embed the website by default. To reproduce the verified development configuration:
+
+```sh
+python3 mac/build.py --bundle-site --cloud-environment Development --cloud-profile /path/to/mac.provisionprofile --signing-identity 'Apple Development: Your Name (ID)' --display-name 'Nova Music iCloud' --output "$HOME/Applications/Nova Music iCloud.app"
+```
+
+The static interface is served only on `127.0.0.1:47937` (`47938` for the review App ID). Keeping a stable origin preserves WebKit’s local library/settings across relaunches. Signed bundled builds include sandbox permissions for the local listener, outbound network requests, and user-selected import/export files. The listener serves read-only bundled resources, rejects traversal, and exposes no library/credential API. Native bridge requests remain restricted to the app’s own main frame and its bound loopback origin. If another copy owns the port, startup reports an error instead of loading another server.
+
+Run the bundled interface checks:
+
+```sh
+xcrun swiftc -swift-version 5 mac/Sources/NativeLocalSite.swift mac/Tests/NativeLocalSiteTests.swift -o /tmp/nova-local-site-tests
+/tmp/nova-local-site-tests
+```
+
+> **Latest signed review:** `~/Applications/Nova Music iCloud Review.app` has native iCloud enabled using the Mac development profile. It reaches the Apple Account, but private-record requests currently fail with “Invalid bundle ID for container”; the review App ID/container association needs verification in the Apple Developer portal. Unsigned Mac builds show a native-signing explanation instead of falling back to browser auth. Use `--cloud-environment Development` or `Production` to override the default environment.
+
+## iCloud support (October 18, 2026)
+
+The website interface now uses iCloud. A properly provisioned Mac build uses the native CloudKit bridge, so no browser sign-in or public web token is needed. Build with:
+
+```sh
+python3 mac/build.py --cloud-profile /path/to/mac.provisionprofile --signing-identity 'Apple Development: Your Name (ID)'
+```
+
+The Mac App ID must be `com.nova.music.mac` (or `com.nova.music.mac.review` for a preview) and have access to `iCloud.com.example.NovaMusic`. The profile’s CloudKit environment must match the other clients. Ad-hoc builds remain usable for local music and web UI review; they do not advertise native iCloud access. Ordinary browsers require the public, origin-restricted token in `docs/sync-config.js`. Existing Mac installations need the rebuilt, provisioned app and the updated website to use native iCloud.
+
+Device commands use a small private record separately from the library artwork asset. Transfers wait for acknowledgement; cloud delivery can take several seconds. A sleeping or closed app is not an available output. The Mac continues polling while its window is minimized and native audio is running, subject to macOS scheduling.
+
+## Earlier build and playback notes
+
 # Nova Music for Mac
 
 A native AppKit application with the same interface as the hosted Nova Music website. WebKit loads the shared interface, so website updates also reach the Mac app. Music and account sync require an internet connection. macOS 14 or later; universal Apple Silicon / Intel executable.
@@ -62,3 +103,35 @@ Connected clients check active playback and available peer devices every 750 ms.
 Validation: 98 website tests, nine Mac engine/cache checks, and 15 phone account/connection tests pass. A real network recording prepared in 1.07 seconds and advanced past the reported cutoff to 90.75 seconds at normal rate (0.999× overall measured clock speed). These checks measure the player clock, not system audio. Both universal Mac copies have verified signatures. The signed phone build was installed on the paired iPhone. The updated Mac app opened and restored its signed-in account and library.
 
 Installed 1.0.4 interface verification: the published output picker transferred a paused song from the unavailable phone to This Mac, confirmed readiness, and displayed its selected checkmark. Resuming the installed native player advanced continuously from 2.2 seconds to 75.8 seconds, beyond the reported 59-second cutoff. Playback was left paused at 78.1 seconds. The short-lived spinner is covered by matching-command/loading-state regression tests; the live transfer completed before the accessibility snapshot.
+
+## Collection positions and native artwork (1.0.5)
+
+The shared interface remembers the last song independently for each album or playlist and shows a small pin beside it. Collection origin survives connected-device commands and transfers. Unchanged playback telemetry now preserves the bottom-left image element.
+
+AVPlayer's native Now Playing information includes the current album and cover. Artwork loads asynchronously, is retained through clock updates, and is cleared when stopping or changing tracks. A cancelled or superseded artwork request cannot set the next song's cover. This requires the matching shared website update.
+
+## Provider-ordered live catalog and local review
+
+`NativeMusicCatalog.swift` supports only validated search, autocomplete, browse, next/lyrics and LRCLIB metadata lookups at fixed HTTPS endpoints. The bridge accepts messages only from Nova's trusted main frame, tracks request IDs, cancels on navigation, and uses cookie-free ephemeral requests. The website chooses the bridge when `novaDesktop.nativeCatalog` is present. Older Mac builds and ordinary browsers keep their existing transport.
+
+Build the production app normally. To review unpublished website changes locally, run:
+
+```sh
+python3 mac/build.py --preview-url http://127.0.0.1:4176/ --output '/tmp/Nova Music Review.app'
+python3 -m http.server 4176 --bind 127.0.0.1 --directory docs
+# In another terminal:
+open '/tmp/Nova Music Review.app'
+```
+
+Review builds cannot use `--install`; they have a separate bundle identity and keychain account. Production builds continue to load the GitHub Pages site and require publication of the updated modules before the new ranking UI is available.
+
+Run catalog transport checks and optional live integration checks:
+
+```sh
+xcrun swiftc -swift-version 5 mac/Sources/NativeMusicCatalog.swift mac/Tests/NativeMusicCatalogTests.swift -o /tmp/nova-native-catalog-tests
+/tmp/nova-native-catalog-tests
+xcrun swiftc -swift-version 5 mac/Sources/NativeMusicCatalog.swift mac/Tests/LiveCatalogSmoke.swift -o /tmp/nova-live-catalog
+node scripts/check-live-search.mjs /tmp/nova-live-catalog
+```
+
+Live native search now preserves YouTube Music's own result order and uses one request per overview/filter. The autocomplete bridge supports only the fixed `music/get_search_suggestions` endpoint with a validated input string. Suggestions debounce for 250 ms, cancel old work, show up to eight results, and support arrow keys, Enter, Escape, and clicking. Selecting a search result keeps its recording ID during playback.

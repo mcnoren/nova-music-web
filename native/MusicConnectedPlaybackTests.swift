@@ -97,7 +97,7 @@ final class MusicConnectedPlaybackTests: XCTestCase {
         let server = try ConnectedPlaybackTestServer(); ConnectedPlaybackURLProtocol.server = server
         var credentials: Data?
         let storage = MusicAccountCredentialStorage(read:{ credentials },save:{ credentials = $0 },delete:{ credentials = nil })
-        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage)
+        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage,backend:.supabase)
         store.musicAccount = account
         try await account.signIn(email:"test@example.com",password:"Fixture-password-123!",mergeGuest:false)
         XCTAssertTrue(account.controlsRemoteOutput)
@@ -159,7 +159,7 @@ final class MusicConnectedPlaybackTests: XCTestCase {
         ConnectedPlaybackURLProtocol.server = server
         var credentials: Data?
         let storage = MusicAccountCredentialStorage(read:{ credentials },save:{ credentials = $0 },delete:{ credentials = nil })
-        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage)
+        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage,backend:.supabase)
         store.musicAccount = account
         try await account.signIn(email:"test@example.com",password:"Fixture-password-123!",mergeGuest:false)
         player.play()
@@ -198,7 +198,7 @@ final class MusicConnectedPlaybackTests: XCTestCase {
         ConnectedPlaybackURLProtocol.server = try ConnectedPlaybackTestServer(expired:true)
         var credentials: Data?
         let storage = MusicAccountCredentialStorage(read:{ credentials },save:{ credentials = $0 },delete:{ credentials = nil })
-        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage)
+        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage,backend:.supabase)
         store.musicAccount = account
         try await account.signIn(email:"test@example.com",password:"Fixture-password-123!",mergeGuest:false)
         for _ in 0..<150 { if player.ready { break }; try await Task.sleep(for:.milliseconds(20)) }
@@ -224,7 +224,7 @@ final class MusicConnectedPlaybackTests: XCTestCase {
         ConnectedPlaybackURLProtocol.server = server
         var credentials: Data?
         let storage = MusicAccountCredentialStorage(read:{ credentials },save:{ credentials = $0 },delete:{ credentials = nil })
-        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage)
+        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage,backend:.supabase)
         store.musicAccount = account
         try await account.signIn(email:"test@example.com",password:"Fixture-password-123!",mergeGuest:false)
         for _ in 0..<150 { if player.ready { break }; try await Task.sleep(for:.milliseconds(20)) }
@@ -276,7 +276,7 @@ final class MusicConnectedPlaybackTests: XCTestCase {
         ConnectedPlaybackURLProtocol.server = try ConnectedPlaybackTestServer(age:4,position:0,playing:true)
         var credentials: Data?
         let storage = MusicAccountCredentialStorage(read:{ credentials },save:{ credentials = $0 },delete:{ credentials = nil })
-        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage)
+        let account = MusicAccountSync(store:store,network:network,credentialService:suite,credentialStorage:storage,backend:.supabase)
         store.musicAccount = account
         try await account.signIn(email:"test@example.com",password:"Fixture-password-123!",mergeGuest:false)
         for _ in 0..<150 { if player.ready { break }; try await Task.sleep(for:.milliseconds(20)) }

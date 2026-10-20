@@ -110,6 +110,7 @@ struct MusicConnectedDevice: Codable, Identifiable, Equatable {
     var id: String
     var name: String
     var at: Double
+    var capabilities: [String]? = nil
     var online: Bool { at.isFinite && Date().timeIntervalSince1970 * 1000 - at < 90000 && at <= Date().timeIntervalSince1970 * 1000 + 10000 }
 }
 struct MusicConnectedSong: Codable, Equatable {
@@ -166,10 +167,17 @@ struct MusicConnectedSnapshot: Codable, Equatable {
     var handoff: String? = nil
     var loading: Bool? = nil
     var positionIntent: String? = nil
+    var activityAt: Double? = nil
+    var context: String? = nil
+    var contextSongIDs: [String:String]? = nil
+    var queueOrigins: [String?]? = nil
     var valid: Bool {
         queue.count <= 1000 && queue.allSatisfy { YouTubeLink.validID($0.id) && $0.source == "youtube" } &&
         (queue.isEmpty ? index == 0 : queue.indices.contains(index)) && position.isFinite && position >= 0 && (0...2).contains(`repeat`) &&
-        (positionIntent == nil || ["preserve","seek"].contains(positionIntent!)) && (at?.isFinite ?? true) && (lyrics?.valid ?? true) && (handoff == nil || UUID(uuidString:handoff!) != nil)
+        (queueOrigins == nil || queueOrigins!.count == queue.count && queueOrigins!.allSatisfy { $0 == nil || $0!.range(of: "^(album|playlist|public-playlist|chart):[A-Za-z0-9_.:-]{1,200}$", options: .regularExpression) != nil }) &&
+        (contextSongIDs == nil || contextSongIDs!.count <= 1000 && contextSongIDs!.allSatisfy { YouTubeLink.validID($0.key) && YouTubeLink.validID($0.value) }) &&
+        (context == nil || context!.range(of:"^(album|playlist|public-playlist|chart):[A-Za-z0-9_.:-]{1,200}$",options:.regularExpression) != nil) &&
+        (positionIntent == nil || ["preserve","seek"].contains(positionIntent!)) && (at?.isFinite ?? true) && (activityAt?.isFinite ?? true) && (lyrics?.valid ?? true) && (handoff == nil || UUID(uuidString:handoff!) != nil)
     }
     func advancedPosition(now: Double = Date().timeIntervalSince1970 * 1000) -> Double {
         let age = now - (at ?? now)
@@ -181,5 +189,9 @@ struct MusicConnectedSession: Codable {
     var owner: String, command: String
     var at: Double
     var snapshot: MusicConnectedSnapshot
+    func isActive(status: MusicConnectedSnapshot?, now: Double = Date().timeIntervalSince1970 * 1000) -> Bool {
+        let latest = status.flatMap { $0.valid && $0.owner == owner && $0.command == command ? $0 : nil } ?? snapshot
+        return now - at < 90000 || latest.playing && now - (latest.at ?? at) < 90000 || now - (latest.activityAt ?? at) < 90000
+    }
     var valid: Bool { UUID(uuidString:owner) != nil && UUID(uuidString:command) != nil && at.isFinite && snapshot.valid }
 }

@@ -1,9 +1,10 @@
-import {NovaSyncClient} from './sync-client.js?v=1370aeeba3ab';
-import {emptyDocument,validateDocument,mergeDocuments,updateDocument,valuesOf,documentsEqual} from './sync-model.js?v=dbd0efff3529';
+import {libraryStorage} from './library-storage.js?v=2b2dd930b6fd';
+import {NovaSyncClient} from './sync-client.js?v=0c40be31f132';
+import {emptyDocument,validateDocument,mergeDocuments,updateDocument,valuesOf,documentsEqual} from './sync-model.js?v=d6408be34cee';
 
 const partition=(doc,connection)=>({...doc,records:Object.fromEntries(Object.entries(doc.records).filter(([key])=>key.startsWith('connect:')===connection))});
 const cacheKey=id=>'nova-icloud-document-v1:'+id;
-const read=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback}catch{return fallback}};
+const read=(key,fallback)=>{try{return JSON.parse(libraryStorage.getItem(key))??fallback}catch{return fallback}};
 async function identity(name){
  const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(name)));
  const hex=Array.from(hash.slice(0,16),b=>b.toString(16).padStart(2,'0')).join('');
@@ -142,9 +143,9 @@ export class ICloudSyncClient extends NovaSyncClient {
  async initialize(){
   // Recover the last cached library from the previous provider without contacting it.
   let old;try{old=JSON.parse(sessionStorage.getItem('nova-music-auth-session-v1'))}catch{}
-  if(!localStorage.getItem('nova-icloud-identity')&&old?.user?.id){const cached=read('nova-music-account-library-v1:'+old.user.id,null);if(cached){this.applying=true;try{this.callbacks.activate(old.user,cached);this.callbacks.apply(this.callbacks.values())}finally{this.applying=false}}}
-  if(!this.configured||localStorage.getItem('nova-icloud-enabled')==='false')return;
-  const identity=localStorage.getItem('nova-icloud-identity'),cached=identity?read(cacheKey(identity),null):null;
+  if(!libraryStorage.getItem('nova-icloud-identity')&&old?.user?.id){const cached=read('nova-music-account-library-v1:'+old.user.id,null);if(cached){this.applying=true;try{this.callbacks.activate(old.user,cached);this.callbacks.apply(this.callbacks.values())}finally{this.applying=false}}}
+  if(!this.configured||libraryStorage.getItem('nova-icloud-enabled')==='false')return;
+  const identity=libraryStorage.getItem('nova-icloud-identity'),cached=identity?read(cacheKey(identity),null):null;
   if(cached&&valuesOf(validateDocument(cached))['deviceTrust:localPlayback']){
    ++this.generation;this.activeUser={id:identity,email:'iCloud'};this.session={user:this.activeUser};this.connection=emptyDocument();
    this.document=partition(cached,false);this.previous=valuesOf(this.document);this.appliedLibrary=null;
@@ -160,7 +161,7 @@ export class ICloudSyncClient extends NovaSyncClient {
   if(!this.waitingForSignIn){this.waitingForSignIn=true;this.storage.container.whenUserSignsIn().then(async()=>{this.waitingForSignIn=false;try{await this.enable({mergeLibrary:this.mergeOnSignIn})}catch(error){this.updateStatus('error',error.message)}});}
  }
  async enable({mergeLibrary=true,automatic=false,synchronize=true}={}){
-  const id=await this.storage.accountID(),old=localStorage.getItem('nova-icloud-identity');
+  const id=await this.storage.accountID(),old=libraryStorage.getItem('nova-icloud-identity');
   if(automatic&&old&&old!==id)throw Error('Your Apple Account changed. Enable iCloud again and choose whether to add this library.');
   if(this.user&&this.user.id!==id)await this.signOut();
   const guest=mergeLibrary?this.callbacks.values():null;
@@ -169,12 +170,12 @@ export class ICloudSyncClient extends NovaSyncClient {
   this.previous=valuesOf(this.document);this.appliedLibrary=null;
   this.applying=true;try{this.callbacks.activate(this.user,null)}finally{this.applying=false}
   if(guest)this.document=updateDocument(this.document,this.previous,{...this.previous,...guest},this.actor);
-  this.previous=valuesOf(this.document);localStorage.setItem('nova-icloud-identity',id);localStorage.setItem('nova-icloud-enabled','true');
+  this.previous=valuesOf(this.document);libraryStorage.setItem('nova-icloud-identity',id);libraryStorage.setItem('nova-icloud-enabled','true');
   this.applyCurrent();if(synchronize)await this.sync();
   if(this.storage.container)this.storage.container.whenUserSignsOut().then(()=>this.signOut());
  }
  saveSession(){}
- saveDocument(){if(this.user)localStorage.setItem(cacheKey(this.user.id),JSON.stringify(partition(this.document,false)));}
+ saveDocument(){if(this.user)libraryStorage.setItem(cacheKey(this.user.id),JSON.stringify(partition(this.document,false)));}
  connectValues(){return valuesOf(this.connection);}
  setConnectValues(values){
   if(!this.user)return;if(Object.keys(values).some(k=>!k.startsWith('connect:')))throw Error('Invalid playback record.');
@@ -229,13 +230,13 @@ export class ICloudSyncClient extends NovaSyncClient {
   throw Error('Another device is updating iCloud. Your changes are saved; sync will retry.');
  }
  schedule(delay=700){
-  if(!this.configured||localStorage.getItem('nova-icloud-enabled')==='false')return;
+  if(!this.configured||libraryStorage.getItem('nova-icloud-enabled')==='false')return;
   clearTimeout(this.timer);this.timer=setTimeout(()=>this.sync(),delay);
  }
  async runSync(){
   if(Date.now()<this.retryAt)return;
   if(!this.user){
-   if(!this.configured||localStorage.getItem('nova-icloud-enabled')==='false')return;
+   if(!this.configured||libraryStorage.getItem('nova-icloud-enabled')==='false')return;
    try{const user=await this.storage.setup();if(user)await this.enable({automatic:true,synchronize:false});}
    catch(error){this.retryAt=Date.now()+10000;this.updateStatus('error',error.message);return;}
    if(!this.user)return;
@@ -252,7 +253,7 @@ export class ICloudSyncClient extends NovaSyncClient {
  async signOut(){
   this.playbackTransport?.stop();this.localConfiguration=null;this.connectedPeers=new Set();
   this.changed();const values=valuesOf(this.document);++this.generation;clearTimeout(this.timer);this.activeUser=null;this.session=null;this.connection=emptyDocument();
-  localStorage.setItem('nova-icloud-enabled','false');this.document=emptyDocument();this.previous={};
+  libraryStorage.setItem('nova-icloud-enabled','false');this.document=emptyDocument();this.previous={};
   this.applying=true;try{this.callbacks.deactivate?.();this.callbacks.apply(values)}finally{this.applying=false}
   this.updateStatus('signed-out','iCloud sync is off. Your library stays here.');
  }
