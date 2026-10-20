@@ -138,3 +138,19 @@ button.review-row:hover,button.song-search-row:hover{background:#ffffff0e}.revie
 #folder-replacement-filter{width:100%}.menu-list [data-action="folder-replace-confirm"]{display:flex;align-items:center;gap:12px;text-align:left}.menu-list [hidden]{display:none!important}
 @media(max-width:520px){.folder-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.folder-item{gap:10px;padding:10px}.folder-item-actions .icon-button{width:32px;min-width:32px}}
 @media(max-width:760px){body:has(.folder-items) .page-heading{flex-direction:column;align-items:flex-start;gap:16px}body:has(.folder-items) .page-heading .button-row{width:100%;justify-content:flex-start;gap:12px}}
+
+/* Menus size to their actions and keep labels aligned with the click target. */
+.menu-list{gap:2px;text-align:left;align-content:start}
+.menu-list>button,.menu-list>a{justify-content:flex-start;text-align:left;white-space:normal;margin:0;min-width:0}
+.menu-list>button>span,.menu-list>a>span{text-align:left;min-width:0}
+.menu-list small{display:block;color:var(--muted)}
+.context-menu{width:max-content;min-width:0;max-width:min(320px,calc(100vw - 16px));height:auto;min-height:0;padding:4px}
+.context-menu .menu-list>*{padding:8px 10px;min-height:34px;justify-content:flex-start;line-height:1.35}
+.context-menu .menu-list svg{flex:none}
+#modal.menu-dialog{width:max-content;min-width:min(220px,calc(100vw - 30px));max-width:min(340px,calc(100vw - 30px));height:auto;min-height:0;padding:14px}
+#modal.menu-dialog .modal-heading{margin-bottom:8px;gap:12px}
+#modal.menu-dialog .modal-heading h2{font-size:17px;text-align:left}
+#modal.menu-dialog .menu-list>*{padding:8px 10px;min-height:34px}
+#modal-body{text-align:left}
+#modal-body .scroll-list:empty{display:none}
+#song-search-results:has(.song-search-row){margin-top:6px}

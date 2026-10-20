@@ -1,3 +1,5 @@
+import {menuPosition} from './menu-layout.js?v=9468327f16da';
+import {searchCollections,collectionKey,sameFolderSlot} from './collection-picker.js?v=9d970cedd736';
 import {libraryStorage} from './library-storage.js?v=2b2dd930b6fd';
 import {moveFolderItem,replaceFolderItem,sidebarSelection} from './folder-controls.js?v=87fc22391933';
 import {syncCapabilities as describeSyncCapabilities} from './sync-capabilities.js?v=86c6082eeb13';
@@ -105,12 +107,46 @@ function folderPage(id){
  return `<article class="folder-item" data-folder-index="${index}">${folderEditing?btn('⠿','folder-drag',`${data} aria-label="Drag ${esc(title)}"`,'icon-button drag-handle'):''}<a class="folder-cover" href="#${item.kind}/${encodeURIComponent(item.id)}">${item.kind==='playlist'?playlistCover(obj,'folder-art'):art(obj.artwork,'folder-art',title)}</a><a class="song-info" href="#${item.kind}/${encodeURIComponent(item.id)}"><strong>${esc(title)}</strong><small>${esc(item.kind==='album'?obj.artist:'Playlist')}${f.pins?.includes(item.kind+':'+item.id)?' · Pinned':''}</small></a><div class="folder-item-actions">${folderEditing?btn(icon('up'),'folder-move',`${data} data-direction="-1" aria-label="Move up" ${index===0?'disabled':''}`,'icon-button')+btn(icon('down'),'folder-move',`${data} data-direction="1" aria-label="Move down" ${index===f.items.length-1?'disabled':''}`,'icon-button'):''}${btn(icon('more'),'folder-item-menu',`${data} aria-label="Options for ${esc(title)}"`,'icon-button')}</div></article>`;
  }).join('')+'</div>'+(f.items.length?'':empty('This folder is empty','Add albums or playlists to organize your music.'));
 }
-function folderItemMenu(id,index){folderReplacement(id,index);}
+function folderItemMenu(id,index,origin){
+ const f=state.folders.find(f=>f.id===id),item=f?.items[index];if(!item)return;
+ menu('Collection',`<div class="menu-list">${btn('Replace album or playlist…','folder-replace',`data-id="${esc(id)}" data-index="${index}"`)}${btn(f.pins?.includes(item.kind+':'+item.id)?'Unpin':'Pin','folder-pin',`data-id="${esc(id)}" data-kind="${item.kind}" data-item="${esc(item.id)}"`)}${btn('Remove from folder','folder-remove',`data-id="${esc(id)}" data-index="${index}"`,'danger')}</div>`,origin);
+}
 function folderReplacement(id,index){
- const f=state.folders.find(f=>f.id===id);if(!f?.items[index])return;
- const choices=[...[...albums.values()].map(a=>({kind:'album',id:a.id,name:a.title,artwork:a.artwork})),...state.playlists.map(p=>({kind:'playlist',id:p.id,name:p.name,artwork:p.artwork}))].filter(c=>!f.items.some(i=>i.kind===c.kind&&i.id===c.id));
- const item=f.items[index];
- modal('Replace collection',`<div class="button-row">${btn(f.pins?.includes(item.kind+':'+item.id)?'Unpin':'Pin','folder-pin',`data-id="${esc(id)}" data-kind="${item.kind}" data-item="${esc(item.id)}"`)}${btn('Remove from folder','folder-remove',`data-id="${esc(id)}" data-index="${index}"`,'danger')}</div><label class="field">Find an album or playlist<input type="search" id="folder-replacement-filter" placeholder="Collection name"></label><div class="scroll-list menu-list">${choices.map(c=>btn(art(c.artwork,'song-image','')+`<span>${esc(c.name)}<small>${c.kind}</small></span>`,'folder-replace-confirm',`data-id="${esc(id)}" data-index="${index}" data-kind="${c.kind}" data-item="${esc(c.id)}" data-filter="${esc(norm(c.name))}"`)).join('')||'<p>No other collections available. Browse albums or playlists first.</p>'}</div>`);
+ const f=state.folders.find(f=>f.id===id),original=f?.items[index];if(!original)return;
+ modal('Replace album or playlist',`<form id="song-search-form"><label class="field">Search all music<input id="song-search-input" name="query" type="search" placeholder="Album, playlist, or artist" autocomplete="off" maxlength="200"></label></form><div id="song-search-results" class="scroll-list" aria-live="polite"><p class="muted">Search the full music catalog for an album or playlist.</p></div>`);
+ songSearch={folderId:id,index,original:{...original},results:[],cursors:null,token:0,controller:null};
+}
+function drawCollectionSearch(){
+ const picker=songSearch,root=$('#song-search-results');if(!picker?.folderId||!root)return;
+ const f=state.folders.find(f=>f.id===picker.folderId);
+ root.innerHTML=picker.results.map(item=>{
+  const libraryID=item.kind==='public-playlist'?state.playlists.find(p=>p.sourceUrl==='https://www.youtube.com/playlist?list='+item.id)?.id:item.id;
+  const inFolder=f?.items.some(i=>i.kind===(item.kind==='album'?'album':'playlist')&&i.id===libraryID);
+  return btn(`${art(item.artwork,'song-image','')}<span><strong>${esc(item.name)}</strong><small>${item.kind==='album'?'Album':'Playlist'} · ${esc(item.detail)}${inFolder?' · Already in folder':''}</small></span>${icon(inFolder?'check':'plus')}`,'collection-search-select',`data-key="${esc(collectionKey(item))}" aria-label="Replace with ${esc(item.name)}" ${inFolder?'disabled':''}`,'song-search-row');
+ }).join('')||'<p class="muted">No albums or playlists found. Try another title or artist.</p>';
+ if(Object.values(picker.cursors||{}).some(Boolean))root.innerHTML+=btn('More results','song-search-more');
+}
+async function selectCollectionReplacement(key){
+ const picker=songSearch,item=picker?.results.find(i=>collectionKey(i)===key);if(!picker?.folderId||!item||picker.saving)return;
+ picker.saving=true;const selectionToken=picker.token,root=$('#song-search-results');$$('button',root).forEach(b=>b.disabled=true);
+ const status=document.createElement('p');status.className='loading';status.textContent='Loading '+item.name+'…';root.prepend(status);
+ try{
+  const remote=item.kind==='public-playlist',browseID=remote?'VL'+item.id:item.kind==='album'?item.id:null;
+  let page;if(item.kind==='album'&&!albums.has(item.id)){const album={id:item.id,title:item.name,artist:item.detail,artwork:item.artwork,tracks:[]};albums.set(item.id,album);state.extraAlbums[item.id]=album;}if(browseID){page=await loadCollection(browseID);const seen=new Set();while(page.cursor){if(seen.has(page.cursor))throw Error('The remaining tracks could not load. Try again.');seen.add(page.cursor);page=await loadCollection(browseID,true);}}
+  if(songSearch!==picker||picker.token!==selectionToken)return;
+  const f=state.folders.find(f=>f.id===picker.folderId);
+  if(!sameFolderSlot(f,picker.index,picker.original))throw Error('This folder changed. Reopen the collection options and choose its replacement again.');
+  let playlist=remote?state.playlists.find(p=>p.sourceUrl==='https://www.youtube.com/playlist?list='+item.id):state.playlists.find(p=>p.id===item.id);
+  if(item.kind==='playlist'&&!playlist)throw Error('This playlist is no longer available. Search again.');
+  const created=remote&&!playlist;
+  if(created)playlist={id:crypto.randomUUID(),name:item.name,artwork:item.artwork,songs:page.songs.map(s=>s.id),sourceUrl:'https://www.youtube.com/playlist?list='+item.id,folderOnly:true};
+  const replacement={kind:remote?'playlist':item.kind,id:remote?playlist.id:item.id};
+  if(!replaceFolderItem(f,picker.index,replacement))throw Error('That collection is already in this folder.');
+  if(created)state.playlists.push(playlist);
+  persist();$('#modal').close();await render();toast('Collection replaced');
+ }catch(error){
+  if(songSearch!==picker||picker.token!==selectionToken)return;drawCollectionSearch();const notice=document.createElement('p');notice.className='notice error';notice.textContent=error.message||'The collection could not load. Try again.';root.prepend(notice);
+ }finally{picker.saving=false;}
 }
 async function folderAction(name,data){
  if(name==='public-playlist-folder'){
@@ -133,13 +169,16 @@ async function folderAction(name,data){
  else return false;
  persist();await render();return true;
 }
-document.addEventListener('input',e=>{if(e.target.id==='folder-replacement-filter')$$('[data-filter]',$('#modal')).forEach(row=>row.hidden=!row.dataset.filter.includes(norm(e.target.value)));});
-function collectionContextMenu(e){
- const entry=e.target.closest('.library-entry');if(entry){e.preventDefault();modal('Library options',`<div class="menu-list">${btn(state.libraryPins?.includes(entry.hash)?'Unpin':'Pin','library-pin',`data-href="${esc(entry.hash)}"`)}</div>`);return;}
- const row=e.target.closest('[data-folder-index]');if(row){e.preventDefault();folderItemMenu(row.closest('[data-folder]').dataset.folder,Number(row.dataset.folderIndex));return;}
+async function collectionContextMenu(e){
+ const origin={anchor:e.target.closest('button,a,[data-song-row],[data-folder-index]'),point:{x:e.clientX,y:e.clientY}};
+ const entry=e.target.closest('.library-entry');if(entry){e.preventDefault();menu('Library',`<div class="menu-list">${btn(state.libraryPins?.includes(entry.hash)?'Unpin':'Pin','library-pin',`data-href="${esc(entry.hash)}"`)}</div>`,origin);return;}
+ const row=e.target.closest('[data-folder-index]');if(row){e.preventDefault();folderItemMenu(row.closest('[data-folder]').dataset.folder,Number(row.dataset.folderIndex),origin);return;}
  const song=e.target.closest('[data-song-row]'),link=e.target.closest('a[href^="#album/"],a[href^="#playlist/"],a[href^="#artist/"]');
- if(song){e.preventDefault();action('song-menu',{id:song.dataset.songRow});}
- else if(link){e.preventDefault();const [kind,id]=link.hash.slice(1).split('/');if(kind==='playlist')action('edit-playlist',{id:decodeURIComponent(id)});else action(kind+'-menu',{id:decodeURIComponent(id)});}
+ if(!song&&!link)return;e.preventDefault();actionAnchor=origin.anchor;actionMenuOrigin=origin;
+ try{
+  if(song)await action('song-menu',{id:song.dataset.songRow,list:song.querySelector('[data-list]')?.dataset.list});
+  else{const [kind,id]=link.hash.slice(1).split('/');await action(kind==='playlist'?'playlist-menu':kind+'-menu',{id:decodeURIComponent(id)});}
+ }catch(error){toast(error.message)}finally{actionMenuOrigin=null;}
 }
 document.addEventListener('contextmenu',collectionContextMenu);
 let collectionHold=null;
@@ -147,7 +186,7 @@ document.addEventListener('pointerdown',e=>{
  if(e.button!==0)return;
  const handle=e.target.closest('.drag-handle'),row=e.target.closest('[data-folder-index]');
  if(handle&&row){e.preventDefault();handle.setPointerCapture(e.pointerId);folderDrag={row,from:Number(row.dataset.folderIndex),to:Number(row.dataset.folderIndex),id:row.closest('[data-folder]').dataset.folder};row.classList.add('dragging');return;}
- if(e.pointerType==='touch'&&e.target.closest('[data-folder-index],[data-song-row],.library-entry,a[href^="#album/"],a[href^="#playlist/"],a[href^="#artist/"]')){const x=e.clientX,y=e.clientY,target=e.target;collectionHold={x,y,timer:setTimeout(()=>{suppressFolderClick=true;collectionContextMenu({target,preventDefault(){}});collectionHold=null;},500)};}
+ if(e.pointerType==='touch'&&e.target.closest('[data-folder-index],[data-song-row],.library-entry,a[href^="#album/"],a[href^="#playlist/"],a[href^="#artist/"]')){const x=e.clientX,y=e.clientY,target=e.target;collectionHold={x,y,timer:setTimeout(()=>{suppressFolderClick=true;collectionContextMenu({target,clientX:x,clientY:y,preventDefault(){}});collectionHold=null;},500)};}
 });
 document.addEventListener('pointermove',e=>{
  if(collectionHold&&Math.hypot(e.clientX-collectionHold.x,e.clientY-collectionHold.y)>10){clearTimeout(collectionHold.timer);collectionHold=null;}
@@ -199,12 +238,14 @@ async function render(forceSearch=false){
  if(page==='search'&&searchQuery)await runSearch(searchQuery);if(page==='receiver')renderReceiver();
 }
 
-let actionAnchor=null,menuTrigger=null,profileDraft=null;
+let actionAnchor=null,menuTrigger=null,actionMenuOrigin=null,profileDraft=null;
 function closeMenu(restore=true){const menu=$('#context-menu');if(!menu||menu.hidden)return;menu.hidden=true;menuTrigger?.setAttribute('aria-expanded','false');if(restore&&menuTrigger?.isConnected)menuTrigger.focus();menuTrigger=null}
-function menu(title,html){
- const el=$('#context-menu'),anchor=actionAnchor;if(!anchor?.isConnected){modal(title,html);return}
- closeMenu(false);menuTrigger=anchor;anchor.setAttribute('aria-haspopup','menu');anchor.setAttribute('aria-expanded','true');el.setAttribute('aria-label',title+' options');el.innerHTML=html;icons(el);$$('button,a',el).forEach(item=>item.setAttribute('role','menuitem'));el.hidden=false;
- const r=anchor.getBoundingClientRect(),width=el.offsetWidth,height=el.offsetHeight;el.style.left=Math.max(8,Math.min(r.left,innerWidth-width-8))+'px';el.style.top=Math.max(8,Math.min(r.bottom+6,innerHeight-height-8))+'px';el.querySelector('button,a')?.focus();
+function menu(title,html,origin=actionMenuOrigin){
+ const el=$('#context-menu'),anchor=origin?.anchor||actionAnchor,point=origin?.point;actionMenuOrigin=null;
+ if(!point&&!anchor?.isConnected){modal(title,html,true);return}
+ closeMenu(false);($('#modal').open?$('#modal'):document.body).append(el);menuTrigger=anchor;anchor?.setAttribute('aria-haspopup','menu');anchor?.setAttribute('aria-expanded','true');el.setAttribute('aria-label',title+' options');el.innerHTML=html;icons(el);$$('button,a',el).forEach(item=>item.setAttribute('role','menuitem'));el.hidden=false;
+ const r=anchor?.getBoundingClientRect(),position=menuPosition(point||{x:r.left,y:r.bottom+4},{width:el.offsetWidth,height:el.offsetHeight},{width:innerWidth,height:innerHeight});
+ el.style.left=position.left+'px';el.style.top=position.top+'px';el.querySelector('button,a')?.focus({preventScroll:true});
 }
 $('#context-menu').addEventListener('keydown',e=>{if(e.key==='Tab'){closeMenu();return}if(e.key==='Escape'){e.preventDefault();closeMenu();return}if(!['ArrowDown','ArrowUp','Home','End'].includes(e.key))return;e.preventDefault();const items=$$('button,a',$('#context-menu')),i=items.indexOf(document.activeElement),next=e.key==='Home'?0:e.key==='End'?items.length-1:(i+(e.key==='ArrowDown'?1:-1)+items.length)%items.length;items[next]?.focus()});
 window.addEventListener('resize',()=>closeMenu(false));document.addEventListener('scroll',e=>{if(!e.target.closest?.('#context-menu'))closeMenu(false)},true);
@@ -215,8 +256,8 @@ function profileSummary(){const profile=accountProfile();return `<div class="pro
 function editProfile(){profileDraft=structuredClone(accountProfile());modal('Edit profile',`<form id="profile-form"><div class="profile-summary"><span id="profile-preview" class="profile-avatar"></span><label class="field">Display name<input name="name" maxlength="60" value="${esc(profileDraft.name)}" autocomplete="nickname"></label></div><h3>Choose an icon</h3><div class="profile-icons">${profileIcons.map(value=>`<button type="button" data-action="profile-icon" data-value="${esc(value)}" class="profile-choice" aria-label="Icon ${esc(value)}">${esc(value)}</button>`).join('')}</div><h3>Background color</h3><div class="profile-colors">${profileColors.map((value,i)=>`<button type="button" data-action="profile-color" data-value="${value}" class="profile-choice" style="background:${value}" aria-label="${['Green','Purple','Pink','Blue','Yellow','Orange'][i]}"></button>`).join('')}</div><label class="field profile-upload">Or choose a photo<input id="profile-photo" type="file" accept="image/jpeg,image/png,image/webp"></label><button type="button" data-action="profile-remove-photo" class="text-button">Remove photo</button><p class="small-copy">${accountClient?.user?'Saved privately with your account and synced across devices.':'Sign in to sync this profile across devices.'}</p><div class="modal-actions"><button class="primary">Save profile</button></div></form>`);updateProfilePreview()}
 function updateProfilePreview(){const preview=$('#profile-preview');if(!preview)return;preview.innerHTML=avatarHTML(profileDraft);preview.style.backgroundColor=profileDraft.color;$$('[data-action="profile-icon"]').forEach(b=>b.setAttribute('aria-pressed',String(!profileDraft.image&&b.dataset.value===profileDraft.icon)));$$('[data-action="profile-color"]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.value===profileDraft.color)))}
 document.addEventListener('change',async e=>{if(e.target.id!=='profile-photo')return;const file=e.target.files[0];if(!file)return;const draft=profileDraft,button=$('#profile-form button.primary');button.disabled=true;try{if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>15000000)throw Error('Choose a PNG, JPEG or WebP photo under 15 MB.');const bitmap=await createImageBitmap(file),canvas=document.createElement('canvas');canvas.width=canvas.height=256;const size=Math.min(bitmap.width,bitmap.height);canvas.getContext('2d').drawImage(bitmap,(bitmap.width-size)/2,(bitmap.height-size)/2,size,size,0,0,256,256);bitmap.close();const image=canvas.toDataURL('image/jpeg',.8);validateProfile({...draft,image});if(profileDraft!==draft)return;profileDraft.image=image;updateProfilePreview()}catch(error){toast(error.message)}finally{if(button.isConnected)button.disabled=false}});
-function modal(title,body){stopSongSearch();closeMenu();$('#modal-title').textContent=title;$('#modal-body').innerHTML=body;icons($('#modal'));if(!$('#modal').open)$('#modal').showModal();setTimeout(()=>$('#modal input:not([type=checkbox])')?.focus(),50)}
-document.addEventListener('click',async e=>{if(e.target.closest('.skip')){e.preventDefault();$('#content').focus();return}const b=e.target.closest('[data-action]');if(!e.target.closest('#context-menu'))closeMenu(false);if(!b)return;actionAnchor=b;if(b.closest('#context-menu'))closeMenu(false);try{await action(b.dataset.action,b.dataset)}catch(error){toast(error.message||'Something went wrong. Try again.')}});
+function modal(title,body,forceDialog=false){if(!forceDialog&&!$('#modal').open&&body.trim().startsWith('<div class="menu-list">')&&(actionMenuOrigin?.point||actionAnchor?.isConnected)){menu(title,body);return;}stopSongSearch();closeMenu();actionMenuOrigin=null;$('#modal').classList.toggle('menu-dialog',body.trim().startsWith('<div class="menu-list">'));$('#modal-title').textContent=title;$('#modal-body').innerHTML=body;icons($('#modal'));if(!$('#modal').open)$('#modal').showModal();setTimeout(()=>$('#modal input:not([type=checkbox])')?.focus(),50)}
+document.addEventListener('click',async e=>{if(e.target.closest('.skip')){e.preventDefault();$('#content').focus();return}const b=e.target.closest('[data-action]');if(!e.target.closest('#context-menu'))closeMenu(false);if(!b)return;actionMenuOrigin=b.closest('#context-menu')?{anchor:menuTrigger,point:{x:e.clientX,y:e.clientY}}:null;actionAnchor=b;if(b.closest('#context-menu'))closeMenu(false);try{await action(b.dataset.action,b.dataset)}catch(error){toast(error.message||'Something went wrong. Try again.')}});
 window.addEventListener('hashchange',()=>{clearTimeout(searchTimer);render(true);$('.workspace').scrollTo(0,0)});
 async function start(){icons();sidebar();try{catalog=await fetch('catalog.json').then(r=>{if(!r.ok)throw Error('Catalog unavailable');return r.json()});songs=new Map([...catalog.songs,...Object.values(state.extraSongs),...queue.map(id=>songs.get(id)).filter(Boolean)].map(s=>[s.id,s]));albums=new Map([...catalog.albums,...Object.values(state.extraAlbums)].map(a=>[a.id,a]));artists=new Map([...catalog.artists,...Object.values(state.extraArtists)].map(a=>[a.id,a]));await render()}catch{ $('#content').innerHTML=empty('Music couldn’t load','Check your connection and reload the page.',btn('Reload','reload')) }}
 const categories={greatPieces:'Great pieces',symphonies:'Symphonies',solo:'Solo',piano:'Piano',aria:'Arias',vocal:'Songs',orchestral:'Orchestral',concertos:'Concertos',chamber:'Chamber',choral:'Choral',ballet:'Ballet',opera:'Opera',organ:'Organ',all:'All works'};
@@ -439,7 +480,7 @@ function openSongSearch(context){
 }
 function queueSongSearch(){
  const picker=songSearch;if(!picker)return;
- clearTimeout(songSearchTimer);picker.controller?.abort();picker.token++;picker.results=[];picker.cursor='';
+ clearTimeout(songSearchTimer);picker.controller?.abort();picker.token++;picker.results=[];picker.cursor='';picker.cursors=null;
  $('#song-search-results').innerHTML='<p class="muted">Searching music…</p>';
  songSearchTimer=setTimeout(()=>runSongSearch(),350);
 }
@@ -457,9 +498,16 @@ async function runSongSearch(more=false){
  clearTimeout(songSearchTimer);picker.controller?.abort();const controller=new AbortController();picker.controller=controller;
  const token=++picker.token,query=$('#song-search-input').value.trim(),cursor=more?picker.cursor:'';
  picker.query=query;
- if(!query){picker.results=[];picker.cursor='';root.innerHTML='<p class="muted">Search the full music catalog by song or artist.</p>';return}
+ if(!query){picker.results=[];picker.cursor='';picker.cursors=null;root.innerHTML='<p class="muted">'+(picker.folderId?'Search the full music catalog for an album or playlist.':'Search the full music catalog by song or artist.')+'</p>';return}
  if(!more){picker.results=[];picker.cursor='';root.innerHTML='<p class="loading"><span class="spinner"></span>Searching music…</p>'}else{const button=$('[data-action="song-search-more"]',root);if(button)button.disabled=true}
  try{
+  if(picker.folderId){
+   const result=await searchCollections(musicSearch,query,{signal:controller.signal,cursors:more?picker.cursors:null});
+   if(songSearch!==picker||token!==picker.token||controller.signal.aborted)return;
+   const local=more?[]:state.playlists.filter(p=>norm(p.name).includes(norm(query))).map(p=>({kind:'playlist',id:p.id,name:p.name,detail:'Your playlist',artwork:p.artwork}));
+   const candidates=[...(more?picker.results:local),...result.items];picker.results=[...new Map(candidates.map(i=>[collectionKey(i),i])).values()];picker.cursors=result.cursors;
+   drawCollectionSearch();return;
+  }
   const result=await musicSearch.request({query,kind:'Songs',providerOrder:true,...(cursor?{cursor}:{})},{signal:controller.signal});
   if(songSearch!==picker||token!==picker.token||controller.signal.aborted)return;
   picker.results=mergeResults(more?picker.results:[],result.songs||[]).filter(s=>state.settings.explicit||!s.explicit);
@@ -824,6 +872,7 @@ async function action(name,data){
   if(name==='save-album'){if(!state.albums.includes(id)){let page=await loadCollection(id);const seen=new Set();while(page.cursor){if(seen.has(page.cursor))throw Error('The remaining album tracks could not be loaded. Please retry.');seen.add(page.cursor);page=await loadCollection(id,true)}}toggleIn('albums',id);render()}
   if(name==='follow-artist'){toggleIn('artists',id);render()}
   if(name==='song-menu')songMenu(id,data.list);
+  if(name==='playlist-menu'){const p=state.playlists.find(p=>p.id===id);if(p)menu(p.name,`<div class="menu-list">${btn('Edit playlist','edit-playlist',`data-id="${esc(id)}"`)}${btn('Add to folder','add-folder',`data-id="${esc(id)}" data-kind="playlist"`)}${btn('Edit artwork','playlist-artwork',`data-id="${esc(id)}"`)}</div>`);}
   if(name==='enqueue'||name==='enqueue-next'){if(!current){await playSongs([songs.get(id)]);return}if(name==='enqueue-next'){queue.splice(queueIndex+1,0,id);queueOrigins.splice(queueIndex+1,0,null)}else{queue.push(id);queueOrigins.push(null)}toast(name==='enqueue-next'?'Will play next':'Added to queue');$('#modal').close();renderPanel()}
   if(name==='queue-play'){queueIndex=Number(data.index);await playCurrent()}
   if(name==='queue-remove'){const i=Number(data.index);if(i===queueIndex){toast('Skip the current song before removing it.');return}queue.splice(i,1);queueOrigins.splice(i,1);if(i<queueIndex)queueIndex--;renderPanel()}
@@ -841,6 +890,7 @@ async function action(name,data){
   if(name==='playlist-remove'){const p=state.playlists.find(p=>p.id===id);p.songs=p.songs.filter(x=>x!==data.song);persist();libraryForm(p);render()}
   if(name==='pair-song')openSongSearch({playlistId:id,key:data.key});
   if(name==='pair-import-song'){captureImportChoices();openSongSearch({importIndex:Number(data.index)})}
+  if(name==='collection-search-select'){await selectCollectionReplacement(data.key);return;}
   if(name==='song-search-select')selectSearchSong(data.song);
   if(name==='song-search-more')await runSongSearch(true);
   if(name==='song-search-retry')await runSongSearch();
