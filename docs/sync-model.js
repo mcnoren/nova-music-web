@@ -1,5 +1,5 @@
 import {validCollectionContext} from './collection-position.js?v=ab58eb8758aa';
-import {validateCollectionArtwork} from './collection-artwork.js?v=4aab16fb9b27';
+import {validateCollectionArtwork} from './collection-artwork.js?v=8e2379812c31';
 // The same record envelope is used by the website and iOS app.
 // Tombstones retain removals, so an offline device cannot resurrect old entries.
 import {validateProfile,defaultProfile} from './profile.js?v=45be314c1460';
@@ -69,7 +69,7 @@ export function libraryValues(state, catalog) {
     copy.songs.forEach(addSong);
     values['playlist:' + copy.id.toLowerCase()] = copy;
   }
-  for (const [order, folder] of (state.folders || []).entries()) values['folder:' + folder.id.toLowerCase()] = {...json(folder), order};
+  for (const [order, folder] of (state.folders || []).entries()){const copy={...json(folder),order};if(Object.hasOwn(copy,'collectionArtwork'))copy.collectionArtwork=validateCollectionArtwork(copy.collectionArtwork);values['folder:' + folder.id.toLowerCase()]=copy;}
   for (const [artist, ids] of Object.entries(state.releaseChoices || {})) values['releases:' + artist] = ids;
   for (const [album, discs] of Object.entries(state.discChoices || {})) values['discs:' + album] = discs;
   for (const item of state.recent || []) if (remoteSong(item.id)) { values['recent:' + item.id] = item; addSong(item.id); }
@@ -132,6 +132,7 @@ export function applyLibraryValues(state, values) {
   });
   next.folders = list('folder').sort((a,b)=>(a.order||0)-(b.order||0)).map(folder => {
     if (!folder || !actorPattern.test(folder.id) || typeof folder.name !== 'string' || !Array.isArray(folder.items) || !folder.items.every(item => item && ['album', 'playlist'].includes(item.kind) && validID(item.id))) throw Error('A synced folder is invalid.');
+    if(Object.hasOwn(folder,'collectionArtwork'))folder.collectionArtwork=validateCollectionArtwork(folder.collectionArtwork);
     folder.pins = Array.isArray(folder.pins) ? folder.pins.filter(value => typeof value === 'string') : [];
     return folder;
   });

@@ -101,3 +101,18 @@ test('metadata-only album records cannot erase a loaded collection when playback
  assert.deepEqual(next.extraAlbums[album.id].tracks,album.tracks);assert.equal(next.extraAlbums[album.id].complete,true);assert.equal(next.extraAlbums[album.id].live,true);assert.equal(next.extraAlbums[album.id].title,'Updated title');
  assert.deepEqual(next.playlists[0].songs.map(id=>next.extraSongs[id].title),['Song','Second song']);
 });
+test('folder photos, icons, collages, and removal survive library sync',()=>{
+ for(const collectionArtwork of [{style:'photo',image:'data:image/jpeg;base64,/9j/2Q=='},{style:'icon',symbol:'heart.fill'},{style:'collage'},null]){
+  const state=baseState();state.folders=[{id:A,name:'Folder art',items:[],pins:[],collectionArtwork}];
+  const values=libraryValues(state,{songs:[song],albums:[],artists:[]}),next=applyLibraryValues(baseState(),values);
+  assert.deepEqual(next.folders[0].collectionArtwork,collectionArtwork);
+  assert.deepEqual(libraryValues(next,{songs:[song],albums:[],artists:[]})['folder:'+A].collectionArtwork,collectionArtwork);
+ }
+});
+test('invalid folder artwork cannot enter or leave the sync library',()=>{
+ const state=baseState();state.folders=[{id:A,name:'Folder',items:[],collectionArtwork:{style:'photo',image:'javascript:alert(1)'}}];
+ assert.throws(()=>libraryValues(state,{songs:[],albums:[],artists:[]}),/Invalid/);
+ const clean=baseState(),values=libraryValues(clean,{songs:[],albums:[],artists:[]});
+ values['folder:'+A]={id:A,name:'Folder',items:[],collectionArtwork:{style:'icon',symbol:'<script>'}};
+ assert.throws(()=>applyLibraryValues(clean,values),/Invalid/);assert.deepEqual(clean.folders,[]);
+});

@@ -16,3 +16,12 @@ export function playlistCovers(playlist,songs){
  const tracks=new Map(songs.map(song=>[song.id,song])),albums=new Set(),urls=new Set();
  return [playlist.artwork,...(playlist.songs||[]).map(id=>tracks.get(id)).filter(song=>{const album=song?.albumId||(song?.album? song.artist+'|'+song.album:'');if(album&&albums.has(album))return false;if(album)albums.add(album);return true}).map(song=>song?.artwork)].filter(url=>url&&!urls.has(url)&&urls.add(url));
 }
+
+export function folderCovers(folder,albums,playlists,songs){
+ const releases=new Map(albums.map(a=>[a.id,a])),lists=new Map(playlists.map(p=>[p.id,p])),seen=new Set();
+ return (folder.items||[]).flatMap(item=>{
+  if(item.kind==='album')return [releases.get(item.id)?.artwork];
+  const p=lists.get(item.id);if(!p)return [];
+  return p.collectionArtwork?.style==='photo'?[p.collectionArtwork.image]:playlistCovers(p,songs);
+ }).filter(url=>url&&!seen.has(url)&&seen.add(url)).slice(0,4);
+}

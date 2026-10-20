@@ -1,3 +1,9 @@
+# Folder cover art (October 20, 2026)
+
+Mac and web folders support uploaded photos, album-cover collages, icons, and removing custom art. Open a folder and click its cover or choose **Folder settings → Edit cover art**. The selected image appears in the folder header, Home, and sidebar.
+
+The MusicAccount library adapter now exports folder `collectionArtwork` using the same portable image-byte format as playlists. It imports photos into native artwork files, preserving compatibility with the iPhone's existing folder artwork editor. `FolderArtworkTests.swift` covers photo transfer, icon changes, and removal.
+
 # Folder and output updates (October 20, 2026)
 
 The full iPhone Xcode project lives beside this repository. Apply `patches/folder-ui.patch` from that project's root (`git apply /path/to/nova-music-web/native/patches/folder-ui.patch`) to update `NovaBrowser/MusicLibraryOrganization.swift` and `NovaBrowser/MusicLibraryViews.swift`. Copy the updated MusicAccount integration files from this directory into the corresponding app target. Add `FolderOrganizationTests.swift` to its test target.

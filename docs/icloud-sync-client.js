@@ -1,6 +1,6 @@
 import {libraryStorage} from './library-storage.js?v=2b2dd930b6fd';
-import {NovaSyncClient} from './sync-client.js?v=0c40be31f132';
-import {emptyDocument,validateDocument,mergeDocuments,updateDocument,valuesOf,documentsEqual} from './sync-model.js?v=d6408be34cee';
+import {NovaSyncClient} from './sync-client.js?v=f91286d8de01';
+import {emptyDocument,validateDocument,mergeDocuments,updateDocument,valuesOf,documentsEqual} from './sync-model.js?v=d8b534de0001';
 
 const partition=(doc,connection)=>({...doc,records:Object.fromEntries(Object.entries(doc.records).filter(([key])=>key.startsWith('connect:')===connection))});
 const cacheKey=id=>'nova-icloud-document-v1:'+id;

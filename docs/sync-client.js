@@ -1,5 +1,5 @@
 import {libraryStorage} from './library-storage.js?v=2b2dd930b6fd';
-import {emptyDocument, validateDocument, mergeDocuments, updateDocument, valuesOf, documentsEqual} from './sync-model.js?v=d6408be34cee';
+import {emptyDocument, validateDocument, mergeDocuments, updateDocument, valuesOf, documentsEqual} from './sync-model.js?v=d8b534de0001';
 
 const SESSION = 'nova-music-auth-session-v1';
 export const accountLibraryKey = id => 'nova-music-account-library-v1:' + id;

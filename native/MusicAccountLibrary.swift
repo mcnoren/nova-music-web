@@ -95,6 +95,7 @@ enum MusicAccountLibrary {
             })
             value["view"] = .string(folder.gallery == true ? "gallery" : "list")
             value["pins"] = .array((folder.pinnedItemIDs ?? []).map { pin in .string(pin.hasPrefix("playlist:") ? pin.lowercased() : pin) })
+            value["collectionArtwork"] = try sharedArtwork(folder.artwork)
             value["native"] = try .encoded(folder)
             result["folder:\(id)"] = .object(value)
         }
@@ -203,6 +204,7 @@ enum MusicAccountLibrary {
             folder.pinnedItemIDs = value["pins"]?.array?.compactMap(\.string).map { pin in
                 if pin.hasPrefix("playlist:"), let id = UUID(uuidString:String(pin.dropFirst(9))) { return "playlist:\(id.uuidString)" }; return pin
             }
+            if let artwork = value["collectionArtwork"] { folder.artwork = try localArtwork(artwork) }
             folders.append(folder)
         }
         let artistFolders = try group("artistFolder").map { try $0.decoded(MusicArtistFolder.self) }
