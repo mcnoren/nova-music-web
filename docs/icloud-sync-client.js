@@ -51,7 +51,9 @@ export class CloudKitWebStorage {
  async save(document,name,revision){
   validateDocument(document);const text=JSON.stringify(document);
   if(new TextEncoder().encode(text).length>10000000)throw Error('The iCloud library is too large.');
-  checked(await this.database.saveRecords({recordName:name,recordType:'NovaDocument',...(revision?{recordChangeTag:revision}:{}),fields:{document:{value:new Blob([text],{type:'application/json'})}}}));
+  // CWS accepts the JSON bytes as text. application/json triggers an OPTIONS
+  // preflight that Apple’s asset upload endpoint does not allow for web origins.
+  checked(await this.database.saveRecords({recordName:name,recordType:'NovaDocument',...(revision?{recordChangeTag:revision}:{}),fields:{document:{value:new Blob([text],{type:'text/plain'})}}}));
  }
 }
 export class NativeCloudStorage {

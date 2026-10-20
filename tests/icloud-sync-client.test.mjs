@@ -99,3 +99,15 @@ test('cached local trust announces playback even while iCloud is unavailable',as
  Object.assign(mac.local,{queue:[{id:'abcdefghijk',title:'Song',artist:'Artist',source:'youtube',duration:200}],index:0,playing:true});
  await mac.connect.tick();assert.equal(mac.connect.owner,mac.account.actor);
 });
+
+test('web library asset keeps JSON bytes in a CORS-safelisted upload',async()=>{
+ const storage=new CloudKitWebStorage({containerIdentifier:'iCloud.test',apiToken:'public'});
+ const document=updateDocument(emptyDocument(),{},{'liked:abcdefghijk':{id:'abcdefghijk',order:0}},crypto.randomUUID());
+ let saved;
+ storage.database={saveRecords:async record=>{saved=record;return {records:[record]}}};
+ await storage.save(document,'nova-library','revision-1');
+ assert.equal(saved.recordChangeTag,'revision-1');
+ assert.equal(saved.recordType,'NovaDocument');
+ assert.equal(saved.fields.document.value.type,'text/plain');
+ assert.deepEqual(JSON.parse(await saved.fields.document.value.text()),document);
+});
