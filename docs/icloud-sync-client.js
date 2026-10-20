@@ -29,7 +29,7 @@ export async function readWebParts(names,readPart,cache=new Map()){
   const batch=await Promise.all(names.slice(offset,offset+4).map(async name=>{
    const text=cache.has(name)?cache.get(name):await readPart(name);
    if(typeof text!=='string'||text.length>100000||await webPartName(text)!==name)throw Error('iCloud returned a damaged library part.');
-   cache.set(name,text);return text;
+   cache.set(name,text);while(cache.size>128)cache.delete(cache.keys().next().value);return text;
   }));
   for(const text of batch){bytes+=new TextEncoder().encode(text).length;if(bytes>10000000)throw Error('The iCloud library is too large.');values.push(text);}
  }
@@ -96,7 +96,7 @@ export class CloudKitWebStorage {
     try{checked(await this.database.saveRecords({recordName:id,recordType:'NovaDocument',fields:{webText:{value}}}));}
     catch(error){if(!error.conflict)throw error;const raced=checked(await this.database.fetchRecords(id));if(raced.fields?.webText?.value!==value)throw error;}
    }
-   this.partCache.set(id,value);
+   this.partCache.set(id,value);while(this.partCache.size>128)this.partCache.delete(this.partCache.keys().next().value);
   }));
   checked(await this.database.saveRecords({recordName:name,recordType:'NovaDocument',...(revision?{recordChangeTag:revision}:{}),fields:{webParts:{value:parts.map(part=>part.id)}}}));
  }
