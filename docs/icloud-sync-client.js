@@ -18,18 +18,25 @@ function checked(response,{missing=false}={}){
  if(response.hasErrors){if(missing&&response.errors.length===1&&response.errors[0].ckErrorCode==='UNKNOWN_ITEM')return null;throw cloudError(response.errors[0]);}
  if(!response.records?.length)throw Error('iCloud returned an incomplete record.');return response.records[0];
 }
-// Apple’s web asset gateway supports browser CORS; the native CWS upload
-// gateway returned by the SDK does not. Keep the signed path/query intact.
-export function cloudKitWebFetch(input,options={},fetcher=globalThis.fetch){
- const url=new URL(input);
- if(url.protocol==='https:'&&url.hostname==='cws.icloud-content.com'&&url.pathname.endsWith('/singleFileUpload')&&options.method==='POST'){
-  url.hostname='cvws.icloud-content.com';
-  return fetcher(url.href,{...options,mode:'cors',credentials:'omit'});
+export async function webPartName(text){
+ const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
+ return 'nova-library-web-'+Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join('');
+}
+export async function readWebParts(names,readPart,cache=new Map()){
+ if(!Array.isArray(names)||!names.length||names.length>128||names.some(name=>typeof name!=='string'||!/^nova-library-web-[a-f0-9]{64}$/.test(name)))throw Error('iCloud returned an invalid library manifest.');
+ const values=[];let bytes=0;
+ for(let offset=0;offset<names.length;offset+=4){
+  const batch=await Promise.all(names.slice(offset,offset+4).map(async name=>{
+   const text=cache.has(name)?cache.get(name):await readPart(name);
+   if(typeof text!=='string'||text.length>100000||await webPartName(text)!==name)throw Error('iCloud returned a damaged library part.');
+   cache.set(name,text);return text;
+  }));
+  for(const text of batch){bytes+=new TextEncoder().encode(text).length;if(bytes>10000000)throw Error('The iCloud library is too large.');values.push(text);}
  }
- return fetcher(input,options);
+ return validateDocument(JSON.parse(values.join('')));
 }
 export class CloudKitWebStorage {
- constructor(config){this.config=config;this.configured=Boolean(config.containerIdentifier&&config.apiToken);}
+ constructor(config){this.partCache=new Map();this.config=config;this.configured=Boolean(config.containerIdentifier&&config.apiToken);}
  mountAuth(target){
   if(!this.authHost){this.authHost=document.createElement('div');this.authHost.innerHTML='<div id="apple-sign-in-button"></div><div id="apple-sign-out-button" hidden></div>';this.authHost.hidden=true;document.body.append(this.authHost);}
   if(target){this.authHost.hidden=false;target.append(this.authHost);}
@@ -40,7 +47,7 @@ export class CloudKitWebStorage {
   if(!this.configured)throw Error('iCloud is not available in this web build yet. Your library stays here.');
   if(!globalThis.CloudKit){await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.apple-cloudkit.com/ck/2/cloudkit.js';script.onload=resolve;script.onerror=()=>reject(Error('iCloud could not load. Check your connection.'));document.head.append(script)});}
   if(!this.container){
-   CloudKit.configure({services:{fetch:cloudKitWebFetch},containers:[{containerIdentifier:this.config.containerIdentifier,apiTokenAuth:{apiToken:this.config.apiToken,persist:true,signInButton:{id:'apple-sign-in-button'},signOutButton:{id:'apple-sign-out-button'}},environment:this.config.environment||'production'}]});
+   CloudKit.configure({containers:[{containerIdentifier:this.config.containerIdentifier,apiTokenAuth:{apiToken:this.config.apiToken,persist:true,signInButton:{id:'apple-sign-in-button'},signOutButton:{id:'apple-sign-out-button'}},environment:this.config.environment||'production'}]});
    this.container=CloudKit.getDefaultContainer();this.database=this.container.privateCloudDatabase;
   }
   return this.container.setUpAuth();
@@ -49,29 +56,58 @@ export class CloudKitWebStorage {
  async load(name){
   const record=checked(await this.database.fetchRecords(name),{missing:true});
   if(!record)return {document:emptyDocument(),revision:null};
-  const asset=record.fields?.document?.value;
-  if(!asset?.downloadURL||asset.size>10000000)throw Error('iCloud returned an invalid document asset.');
-  const url=new URL(asset.downloadURL.replace('${f}','nova.json'));
-  if(url.protocol!=='https:')throw Error('iCloud returned an insecure asset.');
-  const response=await fetch(url,{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(20000)});
-  if(!response.ok)throw Error('The iCloud document could not download.');
-  const text=await response.text();if(new TextEncoder().encode(text).length>10000000)throw Error('The iCloud library is too large.');
-  return {document:validateDocument(JSON.parse(text)),revision:record.recordChangeTag};
+  let document=emptyDocument();const asset=record.fields?.document?.value;
+  if(asset){
+   if(!asset.downloadURL||asset.size>10000000)throw Error('iCloud returned an invalid document asset.');
+   const url=new URL(asset.downloadURL.replace('${f}','nova.json'));
+   if(url.protocol!=='https:')throw Error('iCloud returned an insecure asset.');
+   const response=await fetch(url,{cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(20000)});
+   if(!response.ok)throw Error('The iCloud document could not download.');
+   const text=await response.text();if(new TextEncoder().encode(text).length>10000000)throw Error('The iCloud library is too large.');
+   document=validateDocument(JSON.parse(text));
+  }
+  const parts=record.fields?.webParts?.value;
+  if(parts){
+   const web=await readWebParts(parts,async name=>{
+    if(this.partCache.has(name))return this.partCache.get(name);
+    const part=checked(await this.database.fetchRecords(name));return part.fields?.webText?.value;
+   },this.partCache);
+   document=mergeDocuments(document,web);
+  }else if(!asset)throw Error('iCloud returned an incomplete library.');
+  return {document,revision:record.recordChangeTag};
  }
  async save(document,name,revision){
   validateDocument(document);const text=JSON.stringify(document);
   if(new TextEncoder().encode(text).length>10000000)throw Error('The iCloud library is too large.');
-  // Keep the JSON bytes in a CORS-safelisted body; native clients read the
-  // same document asset regardless of its upload MIME type.
-  checked(await this.database.saveRecords({recordName:name,recordType:'NovaDocument',...(revision?{recordChangeTag:revision}:{}),fields:{document:{value:new Blob([text],{type:'text/plain'})}}}));
+  const parts=[];
+  for(let offset=0;offset<text.length;){
+   let end=Math.min(text.length,offset+100000);
+   if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end--;
+   const value=text.slice(offset,end);offset=end;
+   const id=await webPartName(value);parts.push({id,value});
+  }
+  // Parts are immutable and content addressed. Publish the revision-checked
+  // manifest only after every part is confirmed, preserving the native asset.
+  for(let offset=0;offset<parts.length;offset+=4)await Promise.all(parts.slice(offset,offset+4).map(async({id,value})=>{
+   if(this.partCache.has(id))return;
+   const existing=checked(await this.database.fetchRecords(id),{missing:true});
+   if(existing){if(existing.fields?.webText?.value!==value)throw Error('iCloud returned a damaged library part.');}
+   else{
+    try{checked(await this.database.saveRecords({recordName:id,recordType:'NovaDocument',fields:{webText:{value}}}));}
+    catch(error){if(!error.conflict)throw error;const raced=checked(await this.database.fetchRecords(id));if(raced.fields?.webText?.value!==value)throw error;}
+   }
+   this.partCache.set(id,value);
+  }));
+  checked(await this.database.saveRecords({recordName:name,recordType:'NovaDocument',...(revision?{recordChangeTag:revision}:{}),fields:{webParts:{value:parts.map(part=>part.id)}}}));
  }
+
 }
 export class NativeCloudStorage {
  constructor({enabled=true}={}){this.configured=enabled;this.next=0;this.pending=new Map();window.addEventListener('nova-native-cloud',event=>{const value=event.detail,pending=this.pending.get(value?.id);if(!pending)return;this.pending.delete(value.id);clearTimeout(pending.timer);if(value.error){const error=Error(value.error);error.conflict=value.conflict;pending.reject(error)}else pending.resolve(value.result);});}
  request(action,values={}){return new Promise((resolve,reject)=>{const id='cloud-'+(++this.next)+'-'+crypto.randomUUID(),timer=setTimeout(()=>{this.pending.delete(id);reject(Error('iCloud did not respond. Your library is saved here.'));},45000);this.pending.set(id,{resolve,reject,timer});window.novaDesktop.post({type:'cloud',id,action,...values});});}
  async setup(){if(!this.configured)throw Error("This Mac build is not signed for iCloud yet. Its Apple iCloud provisioning profile must be added before syncing can work. Your library stays here.");return true;}
  accountID(){return this.request('account');}
- load(name){return this.request('load',{name});}
+ async load(name){const result=await this.request('load',{name});if(result.webDocument)result.document=mergeDocuments(validateDocument(result.document),validateDocument(result.webDocument));return result;}
  save(document,name,revision){validateDocument(document);return this.request('save',{name,revision,document});}
 }
 // The web interface delegates LAN sockets to the trusted native Mac bridge.

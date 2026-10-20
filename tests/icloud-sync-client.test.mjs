@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ICloudSyncClient,CloudKitWebStorage,cloudKitWebFetch} from '../docs/icloud-sync-client.js';
+import {ICloudSyncClient,CloudKitWebStorage,webPartName,readWebParts} from '../docs/icloud-sync-client.js';
 import {NovaConnect} from '../docs/connect.js';
 import {emptyDocument,updateDocument,valuesOf,mergeDocuments} from '../docs/sync-model.js';
 class Storage{constructor(){this.data=new Map()}getItem(k){return this.data.get(k)??null}setItem(k,v){this.data.set(k,String(v))}removeItem(k){this.data.delete(k)}}
@@ -100,25 +100,44 @@ test('cached local trust announces playback even while iCloud is unavailable',as
  await mac.connect.tick();assert.equal(mac.connect.owner,mac.account.actor);
 });
 
-test('web library asset keeps JSON bytes in a CORS-safelisted upload',async()=>{
- const storage=new CloudKitWebStorage({containerIdentifier:'iCloud.test',apiToken:'public'});
- const document=updateDocument(emptyDocument(),{},{'liked:abcdefghijk':{id:'abcdefghijk',order:0}},crypto.randomUUID());
- let saved;
- storage.database={saveRecords:async record=>{saved=record;return {records:[record]}}};
- await storage.save(document,'nova-library','revision-1');
- assert.equal(saved.recordChangeTag,'revision-1');
- assert.equal(saved.recordType,'NovaDocument');
- assert.equal(saved.fields.document.value.type,'text/plain');
- assert.deepEqual(JSON.parse(await saved.fields.document.value.text()),document);
-});
 
-test('web uploads use Apple web asset transport without changing the signed request',async()=>{
- const body=new Blob(['{}'],{type:'text/plain'}),calls=[];
- const fetcher=async(url,options)=>{calls.push({url,options});return {ok:true}};
- await cloudKitWebFetch('https://cws.icloud-content.com/123/singleFileUpload?tk=signed&ref=asset',{method:'POST',body},fetcher);
- assert.equal(calls[0].url,'https://cvws.icloud-content.com/123/singleFileUpload?tk=signed&ref=asset');
- assert.equal(calls[0].options.body,body);assert.equal(calls[0].options.mode,'cors');assert.equal(calls[0].options.credentials,'omit');
- for(const url of ['https://api.apple-cloudkit.com/records/modify','https://cws.icloud-content.com/123/other','https://cws.icloud-content.com.example.org/123/singleFileUpload']){
-  await cloudKitWebFetch(url,{method:'POST'},fetcher);assert.equal(calls.at(-1).url,url);
- }
+function webFixture(){
+ const records=new Map(),writes=[];
+ const storage=new CloudKitWebStorage({containerIdentifier:'iCloud.test',apiToken:'public'});
+ storage.database={fetchRecords:async name=>records.has(name)?{records:[structuredClone(records.get(name))]}:{hasErrors:true,errors:[{ckErrorCode:'UNKNOWN_ITEM'}]},saveRecords:async record=>{
+  const old=records.get(record.recordName);
+  if(old&&old.recordChangeTag!==record.recordChangeTag)return {hasErrors:true,errors:[{ckErrorCode:'CONFLICT'}]};
+  const saved={...record,recordChangeTag:String(Number(old?.recordChangeTag||0)+1),fields:{...old?.fields,...record.fields}};records.set(record.recordName,structuredClone(saved));writes.push(record);return {records:[saved]};
+ }};return {storage,records,writes};
+}
+test('browser sync round-trips a library larger than one record without asset uploads',async()=>{
+ const {storage,records,writes}=webFixture();
+ const document=updateDocument(emptyDocument(),{},{'playlist:test':{name:'Music 🎵'.repeat(170000),songs:[]}},crypto.randomUUID());
+ await storage.save(document,'nova-library',null);
+ assert.ok(records.get('nova-library').fields.webParts.value.length>10);
+ assert.ok(writes.every(record=>!record.fields.document));
+ storage.partCache.clear();assert.deepEqual((await storage.load('nova-library')).document,document);
+ const count=writes.length;await storage.save(document,'nova-library','1');assert.equal(writes.length,count+1);
+});
+test('partial browser writes do not publish an incomplete library manifest',async()=>{
+ const {storage,records}=webFixture(),document=updateDocument(emptyDocument(),{},{'liked:abcdefghijk':{id:'abcdefghijk',order:0}},crypto.randomUUID());
+ storage.database.saveRecords=async()=>{throw Error('offline')};
+ await assert.rejects(storage.save(document,'nova-library',null),/offline/);
+ assert.equal(records.has('nova-library'),false);
+});
+test('browser reads merge native asset edits with web edits and retain tombstones',async()=>{
+ const {storage,records}=webFixture(),actor=crypto.randomUUID();
+ const base=updateDocument(emptyDocument(),{},{'liked:abcdefghijk':{id:'abcdefghijk',order:0}},actor);
+ const web=updateDocument(base,valuesOf(base),{'saved:lmnopqrstuv':{id:'lmnopqrstuv',order:0}},actor);
+ await storage.save(web,'nova-library',null);
+ records.get('nova-library').fields.document={value:{downloadURL:'https://example.com/nova.json',size:300}};
+ const native=updateDocument(base,valuesOf(base),{...valuesOf(base),'folder:test':{name:'Native folder'}},crypto.randomUUID());
+ const original=globalThis.fetch;globalThis.fetch=async()=>({ok:true,text:async()=>JSON.stringify(native)});
+ try{assert.deepEqual((await storage.load('nova-library')).document,mergeDocuments(native,web));}finally{globalThis.fetch=original;}
+ assert.equal(valuesOf((await readWebParts(records.get('nova-library').fields.webParts.value,async name=>records.get(name).fields.webText.value)))['liked:abcdefghijk'],undefined);
+});
+test('tampered or invalid library parts cannot replace the current document',async()=>{
+ const text=JSON.stringify(emptyDocument()),name=await webPartName(text);
+ await assert.rejects(readWebParts([name],async()=>text+' '),/damaged/);
+ await assert.rejects(readWebParts(['another-record'],async()=>text),/manifest/);
 });
