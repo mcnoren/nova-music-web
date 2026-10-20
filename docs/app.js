@@ -2,7 +2,7 @@ import {syncCapabilities as describeSyncCapabilities} from './sync-capabilities.
 import {lyricContentKey,patchLyricContent,lyricInterludeRange,interludeIllumination,presentedLyric,lyricSpring} from './lyric-presentation.js?v=6fe799ffd3ca';
 import {readPlaybackSession} from './playback-session.js?v=8f1205ebc917';
 import {SearchSuggestions} from './search-suggestions.js?v=722b23cf934e';
-import {ICloudSyncClient} from './icloud-sync-client.js?v=4f2b6d3e7db5';
+import {ICloudSyncClient} from './icloud-sync-client.js?v=d39a71974f0f';
 import {collectionContext,rememberCollection,collectionSong} from './collection-position.js?v=ab58eb8758aa';
 import {artistReleases,chosenReleases,releaseKind,releaseTracks,selectedTopSongs} from './artist-library.js?v=f77d8476fc31';
 import {validateCollectionArtwork,playlistCovers,artworkSymbols} from './collection-artwork.js?v=4aab16fb9b27';

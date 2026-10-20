@@ -15,7 +15,7 @@ function cloudError(error){
  result.conflict=['CONFLICT','SERVER_RECORD_CHANGED'].includes(code);result.retryAfter=error?.retryAfter;return result;
 }
 function checked(response,{missing=false}={}){
- if(response.hasErrors){if(missing&&response.errors.length===1&&response.errors[0].ckErrorCode==='UNKNOWN_ITEM')return null;throw cloudError(response.errors[0]);}
+ if(response.hasErrors){if(missing&&response.errors.length===1&&['UNKNOWN_ITEM','NOT_FOUND'].includes(response.errors[0].ckErrorCode))return null;throw cloudError(response.errors[0]);}
  if(!response.records?.length)throw Error('iCloud returned an incomplete record.');return response.records[0];
 }
 export async function webPartName(text){

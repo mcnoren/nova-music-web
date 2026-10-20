@@ -104,7 +104,7 @@ test('cached local trust announces playback even while iCloud is unavailable',as
 function webFixture(){
  const records=new Map(),writes=[];
  const storage=new CloudKitWebStorage({containerIdentifier:'iCloud.test',apiToken:'public'});
- storage.database={fetchRecords:async name=>records.has(name)?{records:[structuredClone(records.get(name))]}:{hasErrors:true,errors:[{ckErrorCode:'UNKNOWN_ITEM'}]},saveRecords:async record=>{
+ storage.database={fetchRecords:async name=>records.has(name)?{records:[structuredClone(records.get(name))]}:{hasErrors:true,errors:[{ckErrorCode:'NOT_FOUND'}]},saveRecords:async record=>{
   const old=records.get(record.recordName);
   if(old&&old.recordChangeTag!==record.recordChangeTag)return {hasErrors:true,errors:[{ckErrorCode:'CONFLICT'}]};
   const saved={...record,recordChangeTag:String(Number(old?.recordChangeTag||0)+1),fields:{...old?.fields,...record.fields}};records.set(record.recordName,structuredClone(saved));writes.push(record);return {records:[saved]};
