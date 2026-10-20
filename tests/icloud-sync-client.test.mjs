@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ICloudSyncClient,CloudKitWebStorage} from '../docs/icloud-sync-client.js';
+import {ICloudSyncClient,CloudKitWebStorage,cloudKitWebFetch} from '../docs/icloud-sync-client.js';
 import {NovaConnect} from '../docs/connect.js';
 import {emptyDocument,updateDocument,valuesOf,mergeDocuments} from '../docs/sync-model.js';
 class Storage{constructor(){this.data=new Map()}getItem(k){return this.data.get(k)??null}setItem(k,v){this.data.set(k,String(v))}removeItem(k){this.data.delete(k)}}
@@ -110,4 +110,15 @@ test('web library asset keeps JSON bytes in a CORS-safelisted upload',async()=>{
  assert.equal(saved.recordType,'NovaDocument');
  assert.equal(saved.fields.document.value.type,'text/plain');
  assert.deepEqual(JSON.parse(await saved.fields.document.value.text()),document);
+});
+
+test('web uploads use Apple web asset transport without changing the signed request',async()=>{
+ const body=new Blob(['{}'],{type:'text/plain'}),calls=[];
+ const fetcher=async(url,options)=>{calls.push({url,options});return {ok:true}};
+ await cloudKitWebFetch('https://cws.icloud-content.com/123/singleFileUpload?tk=signed&ref=asset',{method:'POST',body},fetcher);
+ assert.equal(calls[0].url,'https://cvws.icloud-content.com/123/singleFileUpload?tk=signed&ref=asset');
+ assert.equal(calls[0].options.body,body);assert.equal(calls[0].options.mode,'cors');assert.equal(calls[0].options.credentials,'omit');
+ for(const url of ['https://api.apple-cloudkit.com/records/modify','https://cws.icloud-content.com/123/other','https://cws.icloud-content.com.example.org/123/singleFileUpload']){
+  await cloudKitWebFetch(url,{method:'POST'},fetcher);assert.equal(calls.at(-1).url,url);
+ }
 });

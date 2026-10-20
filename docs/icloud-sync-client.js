@@ -18,6 +18,16 @@ function checked(response,{missing=false}={}){
  if(response.hasErrors){if(missing&&response.errors.length===1&&response.errors[0].ckErrorCode==='UNKNOWN_ITEM')return null;throw cloudError(response.errors[0]);}
  if(!response.records?.length)throw Error('iCloud returned an incomplete record.');return response.records[0];
 }
+// Apple’s web asset gateway supports browser CORS; the native CWS upload
+// gateway returned by the SDK does not. Keep the signed path/query intact.
+export function cloudKitWebFetch(input,options={},fetcher=globalThis.fetch){
+ const url=new URL(input);
+ if(url.protocol==='https:'&&url.hostname==='cws.icloud-content.com'&&url.pathname.endsWith('/singleFileUpload')&&options.method==='POST'){
+  url.hostname='cvws.icloud-content.com';
+  return fetcher(url.href,{...options,mode:'cors',credentials:'omit'});
+ }
+ return fetcher(input,options);
+}
 export class CloudKitWebStorage {
  constructor(config){this.config=config;this.configured=Boolean(config.containerIdentifier&&config.apiToken);}
  mountAuth(target){
@@ -30,7 +40,7 @@ export class CloudKitWebStorage {
   if(!this.configured)throw Error('iCloud is not available in this web build yet. Your library stays here.');
   if(!globalThis.CloudKit){await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.apple-cloudkit.com/ck/2/cloudkit.js';script.onload=resolve;script.onerror=()=>reject(Error('iCloud could not load. Check your connection.'));document.head.append(script)});}
   if(!this.container){
-   CloudKit.configure({containers:[{containerIdentifier:this.config.containerIdentifier,apiTokenAuth:{apiToken:this.config.apiToken,persist:true,signInButton:{id:'apple-sign-in-button'},signOutButton:{id:'apple-sign-out-button'}},environment:this.config.environment||'production'}]});
+   CloudKit.configure({services:{fetch:cloudKitWebFetch},containers:[{containerIdentifier:this.config.containerIdentifier,apiTokenAuth:{apiToken:this.config.apiToken,persist:true,signInButton:{id:'apple-sign-in-button'},signOutButton:{id:'apple-sign-out-button'}},environment:this.config.environment||'production'}]});
    this.container=CloudKit.getDefaultContainer();this.database=this.container.privateCloudDatabase;
   }
   return this.container.setUpAuth();
@@ -51,8 +61,8 @@ export class CloudKitWebStorage {
  async save(document,name,revision){
   validateDocument(document);const text=JSON.stringify(document);
   if(new TextEncoder().encode(text).length>10000000)throw Error('The iCloud library is too large.');
-  // CWS accepts the JSON bytes as text. application/json triggers an OPTIONS
-  // preflight that Apple’s asset upload endpoint does not allow for web origins.
+  // Keep the JSON bytes in a CORS-safelisted body; native clients read the
+  // same document asset regardless of its upload MIME type.
   checked(await this.database.saveRecords({recordName:name,recordType:'NovaDocument',...(revision?{recordChangeTag:revision}:{}),fields:{document:{value:new Blob([text],{type:'text/plain'})}}}));
  }
 }
