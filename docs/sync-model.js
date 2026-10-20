@@ -1,3 +1,4 @@
+import {validCollectionContext} from './collection-position.js?v=ab58eb8758aa';
 import {validateCollectionArtwork} from './collection-artwork.js?v=4aab16fb9b27';
 // The same record envelope is used by the website and iOS app.
 // Tombstones retain removals, so an offline device cannot resurrect old entries.
@@ -72,6 +73,8 @@ export function libraryValues(state, catalog) {
   for (const [artist, ids] of Object.entries(state.releaseChoices || {})) values['releases:' + artist] = ids;
   for (const [album, discs] of Object.entries(state.discChoices || {})) values['discs:' + album] = discs;
   for (const item of state.recent || []) if (remoteSong(item.id)) { values['recent:' + item.id] = item; addSong(item.id); }
+  for(const [context,position] of Object.entries(state.collectionPositions||{}))if(validCollectionContext(context)&&remoteSong(position.songID))values['collectionPosition:'+context]=json(position);
+  if(state.localPlaybackKey)values['deviceTrust:localPlayback']=state.localPlaybackKey;
   values['preference:genres'] = state.genres || [];
   if(state.profile){const profile=validateProfile(state.profile);if(stable(profile)!==stable(defaultProfile()))values['profile:main']=profile;}
   const albumIDs = new Set([...(state.albums || []), ...Object.values(state.releaseChoices || {}).flat(), ...(state.folders || []).flatMap(folder => folder.items.filter(item => item.kind === 'album').map(item => item.id))]);
@@ -130,6 +133,8 @@ export function applyLibraryValues(state, values) {
     folder.pins = Array.isArray(folder.pins) ? folder.pins.filter(value => typeof value === 'string') : [];
     return folder;
   });
+  next.collectionPositions=Object.fromEntries(Object.entries(state.collectionPositions||{}).filter(([,p])=>p.songID?.startsWith('local-')));
+  for(const [key,p] of Object.entries(values))if(key.startsWith('collectionPosition:')){const context=key.slice(19);if(!validCollectionContext(context)||!p||!validID(p.songID)||!Number.isFinite(p.at))throw Error('Invalid collection position.');next.collectionPositions[context]=p;}
   next.releaseChoices = {}; next.discChoices = {};
   for (const [key, value] of Object.entries(values)) {
     if (key.startsWith('releases:')) { if (!Array.isArray(value) || !value.every(validID)) throw Error('Invalid release selection.'); next.releaseChoices[key.slice(9)] = value; }
@@ -137,6 +142,7 @@ export function applyLibraryValues(state, values) {
   }
   next.recent = [...list('recent'),...(state.recent||[]).filter(item=>item.id.startsWith('local-'))].filter(item => item && validID(item.id) && Number.isFinite(item.at)).sort((a, b) => b.at - a.at).slice(0, 100);
   if (Array.isArray(values['preference:genres']) && values['preference:genres'].every(value => typeof value === 'string')) next.genres = values['preference:genres'];
+  next.localPlaybackKey=values['deviceTrust:localPlayback']||null;
   return next;
 }
 function isImageURL(value) { try { const url = new URL(value); return url.protocol === 'https:' || /^data:image\/(png|jpeg|webp);base64,/.test(value); } catch { return false; } }

@@ -1,3 +1,9 @@
+> **Website sync alignment (October 19, 2026):** The shared Mac/web interface separates private iCloud library sync from direct local-network playback. Native Mac, iPhone and iPad apps share playback controls, queues, handoff and lyrics over Wi-Fi after iCloud establishes trust. Ordinary browsers play locally and cannot use the native Bonjour/TCP transport. Browser iCloud access is configured with an origin-restricted public CloudKit JS token in `docs/sync-config.js`, using the Development environment verified in the running Mac app. Private library access still requires Apple Account sign-in. Imported audio remains local. The account and output panels show actual platform capabilities. Historical GitHub/Supabase account instructions below are superseded.
+
+> **iCloud migration (October 18, 2026):** Current sources default to private CloudKit library sync. Native iPhone and website/Mac sources restore device discovery, remote playback controls, queue sharing, handoff and lyrics mirroring. Watch library sync uses the same private iCloud library; Watch-to-phone controls continue through WatchConnectivity. Imported audio remains local. Apple container/profile setup and production schema deployment are required before live iCloud testing or release. The public website has not been deployed by this change. See `outputs/nova-music-icloud-sync/README.md` at the workspace root. Older provider notes below are historical.
+
+> **Native/GitHub migration (October 16, 2026):** the latest native app and website sources use private GitHub repository library sync by default, and no longer route playback through account/device commands. Historical Supabase deployment notes below describe the retired library/account provider; the live catalog-search function is separate and still requires a running search backend. These local changes have not automatically deployed the website.
+
 # Nova Music for the web
 
 A browser adaptation of Nova Music’s Home, Classical, and Search experience. Home is the default page. Search combines full catalog search with browse tiles and the former Discover page’s recommendations, mixes, genres and fresh finds. The logo and Home button return to Home; existing Discover links open Search.
@@ -177,3 +183,29 @@ Playback sync preserves the loaded provider track list and completeness of an al
 ### Playback responsiveness and output confirmation
 
 Mac 1.0.4 updates both local app copies to native HTTPS playback, replacing the older running build that stalled near one minute. Clicked/next recording resolution is cached and overlaps account delivery; connected-device polling and transfers from the current output are faster. Website and phone output pickers show a spinner until the destination confirms readiness, then display the checkmark. Validation: 98 web tests, nine Mac checks, 15 phone account/connection tests, and native network playback beyond 90 seconds. See `mac/README.md` for measured results.
+
+### Collection listening positions and player artwork
+
+Albums, saved playlists and public playlists retain an independent last-played song, shown by a small “Last played here” pin. Positions persist locally and use separate account records per collection, so listening to a shared song in another collection does not move the first collection's pin. The originating collection travels with the connected queue through remote commands and output transfers. Playback from search, artists or a standalone song does not infer an album or playlist. Starting Play still begins at the start; select the pinned song to continue from it.
+
+The browser and Mac interface preserve the bottom player's image element across unchanged playback telemetry. Mac 1.0.5 also forwards album title and cover art to native Now Playing. Artwork fetches run independently of audio and reject cancelled or superseded track requests.
+
+These changes require publishing the updated web assets and updating the native clients. Account synchronization was checked with local fixtures; production account verification remains separate.
+
+## Private GitHub library sync
+
+Create a private repository and a fine-grained GitHub token restricted to it with Contents: Read and write. In Account, enter `owner/repository` and the token; choose Add this device’s library to import existing cached music. The app checks repository privacy before reads/writes and stores metadata/artwork in `nova-library.json`, using SHA-based conflict checks and record merging. The native app keeps its token in Keychain. The website keeps it only in session storage; the Mac wrapper uses its existing Keychain bridge. Tokens never enter public files or library documents. GitHub repository history retains previous library versions.
+
+The native app and website use the same document format and repository identity. Changes are batched after edits and refreshed every five minutes, on reconnect, and when returning to the app/tab. Rate limits back off. Playback is always local; live cross-device control and 750 ms presence polling are removed. AirPlay/Bluetooth use system audio controls. Disconnect preserves the current library, cached documents and unsent edits. Old cached account libraries are available for local migration without requiring the unavailable Supabase project. Cloud-only records cannot be recovered while that service is unavailable.
+
+`docs/github-sync-client.js` is the default active web client; `sync-client.js` remains as a base/document-cache implementation and for legacy tests. The deployed website needs the rebuilt/versioned assets published before Mac/browser clients use this provider. `docs/sync-config.js` is still used by the separate live music-search proxy, not by GitHub library sync. GitHub Pages cannot execute that proxy.
+
+### Provider-ordered native search
+
+The Mac wrapper fetches public YouTube Music metadata directly through `NativeMusicCatalog.swift`; its catalog and autocomplete requests do not use Supabase. All search uses one provider response and preserves the featured result, mixed result order, corrections, and category continuation order. Custom live scoring is no longer applied. Browser-only live search retains its existing proxy, and GitHub library sync remains independent.
+
+`docs/music-catalog.js` contains the shared provider parser; `docs/native-catalog.js` supplies the direct Mac transport. `docs/search-suggestions.js` manages 250 ms autocomplete, cancellation, late replies, and keyboard selection. Up to eight suggestions remain in provider order. Native Mac playback retains the selected recording ID instead of searching for and substituting a studio counterpart.
+
+`tests/fixtures/provider-search.json` is shared with iPhone/Siri tests to verify identical provider order and featured identity. Existing custom-scoring helpers remain available to offline/library/import matching and historical tests; they do not determine live native search order. The provider endpoints are undocumented and isolated for future repairs.
+
+Website publication remains pending. Local Mac review builds use a separate app identity and Keychain service; see `mac/README.md`.

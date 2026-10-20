@@ -1,0 +1,332 @@
+{
+  "query": "Hello Adele",
+  "response": {
+    "contents": [
+      {
+        "musicCardShelfRenderer": {
+          "title": {
+            "runs": [
+              {
+                "text": "Hello (Live)",
+                "navigationEndpoint": {
+                  "watchEndpoint": {
+                    "videoId": "provider001",
+                    "watchEndpointMusicSupportedConfigs": {
+                      "watchEndpointMusicConfig": {
+                        "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "subtitle": {
+            "runs": [
+              {
+                "text": "Video \u2022 Adele"
+              }
+            ]
+          },
+          "navigationEndpoint": {
+            "watchEndpoint": {
+              "videoId": "provider001",
+              "watchEndpointMusicSupportedConfigs": {
+                "watchEndpointMusicConfig": {
+                  "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                }
+              }
+            }
+          },
+          "contents": [
+            {
+              "musicResponsiveListItemRenderer": {
+                "playlistItemData": {
+                  "videoId": "studio00001"
+                },
+                "navigationEndpoint": {
+                  "watchEndpoint": {
+                    "videoId": "studio00001",
+                    "watchEndpointMusicSupportedConfigs": {
+                      "watchEndpointMusicConfig": {
+                        "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                      }
+                    }
+                  }
+                },
+                "flexColumns": [
+                  {
+                    "musicResponsiveListItemFlexColumnRenderer": {
+                      "text": {
+                        "runs": [
+                          {
+                            "text": "Hello"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "musicResponsiveListItemFlexColumnRenderer": {
+                      "text": {
+                        "runs": [
+                          {
+                            "text": "Adele",
+                            "navigationEndpoint": {
+                              "browseEndpoint": {
+                                "browseId": "UCaaaaaaaaaaaaaaaaaaaaaa"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "musicTwoRowItemRenderer": {
+          "title": {
+            "runs": [
+              {
+                "text": "Adele",
+                "navigationEndpoint": {
+                  "browseEndpoint": {
+                    "browseId": "UCaaaaaaaaaaaaaaaaaaaaaa"
+                  }
+                }
+              }
+            ]
+          },
+          "subtitle": {
+            "runs": [
+              {
+                "text": "Artist"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "musicTwoRowItemRenderer": {
+          "title": {
+            "runs": [
+              {
+                "text": "Adele Essentials",
+                "navigationEndpoint": {
+                  "browseEndpoint": {
+                    "browseId": "VLPL12345678901"
+                  }
+                }
+              }
+            ]
+          },
+          "subtitle": {
+            "runs": [
+              {
+                "text": "Playlist \u2022 Someone"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "musicTwoRowItemRenderer": {
+          "title": {
+            "runs": [
+              {
+                "text": "25",
+                "navigationEndpoint": {
+                  "browseEndpoint": {
+                    "browseId": "MPREalbum"
+                  }
+                }
+              }
+            ]
+          },
+          "subtitle": {
+            "runs": [
+              {
+                "text": "Album \u2022 Adele"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "musicResponsiveListItemRenderer": {
+          "playlistItemData": {
+            "videoId": "another0001"
+          },
+          "navigationEndpoint": {
+            "watchEndpoint": {
+              "videoId": "another0001",
+              "watchEndpointMusicSupportedConfigs": {
+                "watchEndpointMusicConfig": {
+                  "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                }
+              }
+            }
+          },
+          "flexColumns": [
+            {
+              "musicResponsiveListItemFlexColumnRenderer": {
+                "text": {
+                  "runs": [
+                    {
+                      "text": "Hello (Remix)"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "musicResponsiveListItemFlexColumnRenderer": {
+                "text": {
+                  "runs": [
+                    {
+                      "text": "Adele",
+                      "navigationEndpoint": {
+                        "browseEndpoint": {
+                          "browseId": "UCaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "musicResponsiveListItemRenderer": {
+          "playlistItemData": {
+            "videoId": "provider001"
+          },
+          "navigationEndpoint": {
+            "watchEndpoint": {
+              "videoId": "provider001",
+              "watchEndpointMusicSupportedConfigs": {
+                "watchEndpointMusicConfig": {
+                  "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                }
+              }
+            }
+          },
+          "flexColumns": [
+            {
+              "musicResponsiveListItemFlexColumnRenderer": {
+                "text": {
+                  "runs": [
+                    {
+                      "text": "Duplicate"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "musicResponsiveListItemFlexColumnRenderer": {
+                "text": {
+                  "runs": [
+                    {
+                      "text": "Adele",
+                      "navigationEndpoint": {
+                        "browseEndpoint": {
+                          "browseId": "UCaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "showingResultsForRenderer": {
+      "correctedQuery": {
+        "runs": [
+          {
+            "text": "Hello Adele"
+          }
+        ]
+      }
+    }
+  },
+  "expectedOrder": [
+    {
+      "kind": "songs",
+      "id": "provider001"
+    },
+    {
+      "kind": "songs",
+      "id": "studio00001"
+    },
+    {
+      "kind": "artists",
+      "id": "UCaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "kind": "playlists",
+      "id": "PL12345678901"
+    },
+    {
+      "kind": "albums",
+      "id": "MPREalbum"
+    },
+    {
+      "kind": "songs",
+      "id": "another0001"
+    }
+  ],
+  "suggestions": {
+    "contents": [
+      {
+        "searchSuggestionsSectionRenderer": {
+          "contents": [
+            {
+              "searchSuggestionRenderer": {
+                "suggestion": {
+                  "runs": [
+                    {
+                      "text": "adele hello"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "searchSuggestionRenderer": {
+                "suggestion": {
+                  "runs": [
+                    {
+                      "text": "adele hello live"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "searchSuggestionRenderer": {
+                "suggestion": {
+                  "runs": [
+                    {
+                      "text": "adele hello"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

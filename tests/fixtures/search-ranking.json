@@ -1,0 +1,790 @@
+[
+  {
+    "name": "studio over cover and official video",
+    "query": "Hello Adele",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "99B plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "2B views",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "1M plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "studio",
+    "expectedSongs": [
+      "studio",
+      "video",
+      "live",
+      "cover"
+    ],
+    "expectedCategories": [
+      "songs"
+    ]
+  },
+  {
+    "name": "live requested",
+    "query": "Hello live Adele",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "99B plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "2B views",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "1M plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "live",
+    "expectedSongs": [
+      "live",
+      "studio",
+      "video",
+      "cover"
+    ],
+    "expectedCategories": [
+      "songs"
+    ]
+  },
+  {
+    "name": "artist title word order",
+    "query": "Adele Hello",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "99B plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "2B views",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "1M plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "studio",
+    "expectedSongs": [
+      "studio",
+      "video",
+      "live",
+      "cover"
+    ],
+    "expectedCategories": [
+      "songs"
+    ]
+  },
+  {
+    "name": "bounded spelling correction",
+    "query": "Hlelo Adele",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "99B plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "2B views",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "1M plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "studio",
+    "expectedSongs": [
+      "studio",
+      "video",
+      "live",
+      "cover"
+    ],
+    "expectedCategories": [
+      "songs"
+    ]
+  },
+  {
+    "name": "unwanted cover without popularity",
+    "query": "Hello",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV",
+          "views": ""
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "studio",
+    "expectedSongs": [
+      "studio",
+      "video",
+      "cover",
+      "live"
+    ],
+    "expectedCategories": [
+      "songs"
+    ]
+  },
+  {
+    "name": "apostrophe alias",
+    "query": "I dont feel like dancing Scissor Sisters",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "I Don't Feel Like Dancin' (Cover)",
+          "artist": "Tribute Artist"
+        },
+        {
+          "id": "studio",
+          "title": "I Don't Feel Like Dancin'",
+          "artist": "Scissor Sisters",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:studio": 1
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "studio",
+    "expectedSongs": [
+      "studio",
+      "cover"
+    ],
+    "expectedCategories": [
+      "songs"
+    ]
+  },
+  {
+    "name": "accents",
+    "query": "Deja Vu Beyonce",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Deja Vu (Cover)",
+          "artist": "Tribute Artist"
+        },
+        {
+          "id": "studio",
+          "title": "Déjà Vu",
+          "artist": "Beyoncé",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:studio": 1
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "studio",
+    "expectedSongs": [
+      "studio",
+      "cover"
+    ],
+    "expectedCategories": [
+      "songs"
+    ]
+  },
+  {
+    "name": "verified lyrics",
+    "query": "lyrics: some remembered lyric words",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "99B plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "2B views",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "1M plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "lyricSongIDs": [
+        "studio"
+      ],
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "studio",
+    "expectedSongs": [
+      "studio",
+      "video",
+      "cover",
+      "live"
+    ],
+    "expectedCategories": [
+      "songs"
+    ]
+  },
+  {
+    "name": "artist intent",
+    "query": "Adele",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "99B plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "2B views",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "1M plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [
+        {
+          "id": "artist",
+          "name": "Adele"
+        }
+      ],
+      "albums": [],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3,
+          "artists:artist": 0
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "artist",
+    "expectedSongs": [
+      "studio",
+      "video",
+      "live",
+      "cover"
+    ],
+    "expectedCategories": [
+      "artists",
+      "songs"
+    ]
+  },
+  {
+    "name": "album intent",
+    "query": "An Album",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "99B plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "2B views",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "1M plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [
+        {
+          "id": "album",
+          "title": "An Album",
+          "artist": "Adele"
+        }
+      ],
+      "playlists": [],
+      "top": {
+        "kind": "songs",
+        "id": "cover"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "songs",
+          "id": "cover"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3,
+          "albums:album": 0
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "album",
+    "expectedSongs": [
+      "studio",
+      "video",
+      "cover",
+      "live"
+    ],
+    "expectedCategories": [
+      "albums",
+      "songs"
+    ]
+  },
+  {
+    "name": "playlist intent",
+    "query": "An Official Playlist",
+    "catalog": {
+      "songs": [
+        {
+          "id": "cover",
+          "title": "Hello (Cover)",
+          "artist": "Tribute Artist",
+          "views": "99B plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "video",
+          "title": "Adele - Hello (Official Music Video)",
+          "artist": "Adele",
+          "views": "2B views",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+        },
+        {
+          "id": "studio",
+          "title": "Hello",
+          "artist": "Adele",
+          "views": "1M plays",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        },
+        {
+          "id": "live",
+          "title": "Hello (Live at Wembley)",
+          "artist": "Adele",
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+        }
+      ],
+      "artists": [],
+      "albums": [],
+      "playlists": [
+        {
+          "id": "RDCLAK5uy_fixture",
+          "name": "An Official Playlist",
+          "author": "YouTube Music"
+        }
+      ],
+      "top": {
+        "kind": "playlists",
+        "id": "RDCLAK5uy_fixture"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "playlists",
+          "id": "RDCLAK5uy_fixture"
+        },
+        "positions": {
+          "songs:cover": 0,
+          "songs:video": 1,
+          "songs:studio": 2,
+          "songs:live": 3,
+          "playlists:RDCLAK5uy_fixture": 0
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedTop": "RDCLAK5uy_fixture",
+    "expectedSongs": [
+      "studio",
+      "video",
+      "cover",
+      "live"
+    ],
+    "expectedCategories": [
+      "playlists",
+      "songs"
+    ]
+  },
+  {
+    "name": "official playlists win equally relevant matches",
+    "query": "Pop Essentials",
+    "expectedTop": "RDCLAK5uy_official",
+    "catalog": {
+      "songs": [],
+      "artists": [],
+      "albums": [],
+      "playlists": [
+        {
+          "id": "unofficial",
+          "name": "Pop Essentials",
+          "author": "Someone"
+        },
+        {
+          "id": "RDCLAK5uy_official",
+          "name": "Pop Essentials",
+          "author": "YouTube Music"
+        }
+      ],
+      "top": {
+        "kind": "playlists",
+        "id": "unofficial"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "playlists",
+          "id": "unofficial"
+        },
+        "positions": {
+          "playlists:unofficial": 0,
+          "playlists:RDCLAK5uy_official": 1
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedSongs": [],
+    "expectedCategories": [
+      "playlists"
+    ]
+  },
+  {
+    "name": "provider category without metadata support",
+    "query": "Something unfamiliar",
+    "expectedTop": "album",
+    "catalog": {
+      "songs": [
+        {
+          "id": "song",
+          "title": "Night Fever",
+          "artist": "Bee Gees"
+        }
+      ],
+      "artists": [],
+      "albums": [
+        {
+          "id": "album",
+          "title": "Main Course",
+          "artist": "Bee Gees"
+        }
+      ],
+      "playlists": [],
+      "top": {
+        "kind": "albums",
+        "id": "album"
+      },
+      "evidence": {
+        "providerTop": {
+          "kind": "albums",
+          "id": "album"
+        },
+        "positions": {
+          "songs:song": 0,
+          "albums:album": 0
+        },
+        "overviewPositions": {}
+      }
+    },
+    "expectedSongs": [
+      "song"
+    ],
+    "expectedCategories": [
+      "albums",
+      "songs"
+    ]
+  }
+]

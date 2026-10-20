@@ -206,3 +206,93 @@ test('local playback preparation starts before the account write finishes',async
  assert.equal(blocked,true);assert.equal(mac.local.queue[0].id,'abcdefghijk');assert.equal(mac.local.position,0);assert.equal(mac.applies,1);
  mac.account.request=original;release();await work;assert.equal(mac.applies,1,'Delivery must not load the same recording twice');
 });
+test('collection origin survives remote selection, transport and output transfer',async t=>{
+ const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
+ const context='album:MPREone';await mac.connect.command({...snapshot(),context});await phone.connect.tick();assert.equal(phone.mirrored.context,context);
+ await phone.connect.setPlayingIntent(false);await mac.connect.tick();assert.equal(mac.local.context,context);
+ await transfer(phone,phone.connect.id,mac);assert.equal(phone.local.context,context);
+ await phone.connect.command(snapshot());assert.equal(phone.local.context,undefined);
+ assert.equal(validSnapshot({...snapshot(),context:'artist:UCone'}),false);
+});
+
+test('chart and per-entry origins remain optional and survive ownership transfer',async t=>{
+ const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
+ const origins=['chart:apple-us-1792012315',null,'public-playlist:PLfixture'];
+ const value={...snapshot([song('abcdefghijk'),song('lmnopqrstuv'),song('bbbbbbbbbbb')]),context:origins[0],queueOrigins:origins};
+ assert.equal(validSnapshot(value),true);
+ assert.equal(validSnapshot({...value,queueOrigins:[origins[0]]}),false);
+ assert.equal(validSnapshot({...value,queueOrigins:['invalid:origin',null]}),false);
+ assert.equal(validSnapshot({...value,queueOrigins:undefined}),true);
+ await mac.connect.command(value);await phone.connect.tick();assert.deepEqual(phone.mirrored.queueOrigins,origins);
+ await transfer(phone,phone.connect.id,mac);assert.deepEqual(phone.local.queueOrigins,origins);
+});
+
+test('both outputs immediately publish track changes and seeks without waiting for a heartbeat',async t=>{
+ const env=setup(t),phone=env.device('Phone'),mac=env.device('Mac');await env.activate(phone);await env.activate(mac);
+ await phone.connect.command(snapshot([song(),song('lmnopqrstuv')]));await mac.connect.tick();
+ phone.local.index=1;phone.local.position=0;await phone.connect.playbackChanged();await mac.account.pollConnect();
+ assert.equal(mac.mirrored.index,1);assert.equal(mac.mirrored.position,0);
+ phone.local.position=89;await phone.connect.playbackChanged();await mac.account.pollConnect();assert.equal(mac.mirrored.position,89);
+ await transfer(mac,mac.connect.id,phone);await phone.connect.tick();
+ mac.local.position=24;await mac.connect.playbackChanged();await phone.account.pollConnect();assert.equal(phone.mirrored.position,24);
+ mac.local.index=0;mac.local.position=0;await mac.connect.playbackChanged();await phone.account.pollConnect();assert.equal(phone.mirrored.index,0);
+});
+test('an idle paused session defaults new playback to the current device despite fresh presence',async t=>{
+ const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
+ await mac.connect.command({...snapshot(),playing:false});
+ const old=Date.now()-100000,session={...mac.connect.session,at:old};
+ mac.account.setConnectValues({[SESSION_KEY]:session,[STATUS_KEY]:{...snapshot(),playing:false,owner:mac.connect.id,command:session.command,at:Date.now(),activityAt:old}});
+ await mac.account.sync();await phone.connect.tick();assert.equal(phone.connect.remote,false);
+ await phone.connect.command(snapshot());assert.equal(phone.connect.owner,phone.connect.id);assert.equal(phone.local.playing,true);
+});
+test('phone can open a background Mac lyrics display once without changing audio ownership',async t=>{
+ const env=setup(t),phone=env.device('Phone'),mac=env.device('Mac');await env.activate(phone);await env.activate(mac);await phone.connect.command(snapshot());
+ let opened=0;mac.connect.options.showLyrics=async()=>{opened++};mac.connect.lastPresence=0;await mac.connect.tick();await phone.connect.tick();
+ const owner=phone.connect.owner,request=await phone.connect.showLyricsOn(mac.connect.id);
+ await mac.connect.tick();await mac.connect.tick();await mac.connect.flush();await phone.connect.tick();
+ assert.equal(opened,1);assert.equal(phone.connect.owner,owner);assert.equal(phone.connect.values['connect:display-status.'+mac.connect.id].id,request.id);
+ // Old requests must not unexpectedly foreground an app after relaunch.
+ mac.connect.lastDisplay=null;
+ mac.connect.values['connect:display.'+mac.connect.id].at=Date.now()-61000;
+ await mac.connect.receive(mac.connect.values);assert.equal(opened,1);
+});
+
+test('scrubbing waits for the playing device and works with either device as output',async t=>{
+ const env=setup(t),mac=env.device('Mac'),phone=env.device('Phone');await env.activate(mac);await env.activate(phone);
+ await mac.connect.command({...snapshot(),playing:false});await mac.account.sync();await phone.connect.tick();
+ async function scrub(controller,output,position){
+  let done=false;const work=controller.connect.seek(position).then(()=>{done=true});
+  await new Promise(resolve=>setTimeout(resolve,10));assert.equal(done,false,'Sending the request alone is not confirmation');
+  for(let i=0;i<100&&!done;i++){await output.connect.tick();await new Promise(resolve=>setTimeout(resolve,10))}
+  await work;assert.equal(output.local.position,position);assert.equal(controller.mirrored.position,position);
+ }
+ await scrub(phone,mac,72);await scrub(phone,mac,4);
+ await transfer(mac,phone.connect.id,mac);await phone.connect.tick();await mac.connect.tick();
+ await scrub(mac,phone,95);await scrub(mac,phone,6);
+});
+
+test('announcing already-playing audio preserves its clock without seeking or restarting',async t=>{
+ const {applyPlayerCommand}=await import('../docs/connected-player.js');
+ for(const announce of ['playbackChanged','tick']){
+  const env=setup(t),device=env.device('Local output');await env.activate(device);
+  device.local.queue=[song()];device.local.position=0;device.local.playing=true;
+  let clock=8.25;const calls=[];
+  device.connect.options.apply=s=>applyPlayerCommand(s,{needsLoad:false,playing:()=>true,
+   seek:p=>{calls.push('seek');clock=p},play:()=>calls.push('play'),pause:()=>calls.push('pause')});
+  await device.connect[announce]();
+  assert.equal(clock,8.25,announce+' must not rewind audio that started during publication');assert.deepEqual(calls,[]);
+  assert.equal(device.connect.session.snapshot.positionIntent,'preserve');
+  for(let i=0;i<4;i++)await device.connect.tick();
+  assert.equal(clock,8.25);assert.deepEqual(calls,[]);
+ }
+});
+
+test('announcing a loading local song never pauses or reloads its engine',async t=>{
+ const env=setup(t),device=env.device('Loading output');await env.activate(device);
+ device.local.queue=[song()];device.local.playing=false;device.local.loading=true;
+ let applications=0;device.connect.options.apply=async()=>applications++;
+ await device.connect.playbackChanged();
+ assert.equal(applications,0,'Startup telemetry must be adopted without applying a paused snapshot');
+ assert.equal(device.connect.applied,device.connect.session.command);
+ assert.equal(device.stops,0);
+});

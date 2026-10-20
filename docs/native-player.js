@@ -27,10 +27,10 @@ export class NativeMusicPlayer {
       catch(error){clearTimeout(timer);this.pending.delete(request);reject(error);}
     });
   }
-  loadVideoById({videoId,startSeconds=0,title='',artist=''},playing=true){
+  loadVideoById({videoId,startSeconds=0,title='',artist='',album='',artwork=''},playing=true){
     for(const pending of this.pending.values()){clearTimeout(pending.timer);pending.reject(Error('Playback changed.'));}this.pending.clear();
     this.generation=crypto.randomUUID();this.value={id:videoId,position:startSeconds,duration:0,state:3,rate:1};
-    return this.request('load',{videoId,position:startSeconds,playing,title,artist,volume:this.volume});
+    return this.request('load',{videoId,position:startSeconds,playing,title,artist,album,artwork,volume:this.volume});
   }
   cueVideoById(value){return this.loadVideoById(value,false);}
   playVideo(){return this.request('play');}

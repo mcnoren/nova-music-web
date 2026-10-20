@@ -1,4 +1,6 @@
-export const normalizeSearch=value=>String(value??'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+import {rankCatalog,normalize} from './search-ranking.js?v=f167518b4d62';
+import {NativeCatalogClient} from './native-catalog.js?v=53c30212c1c7';
+export const normalizeSearch=normalize;
 function distance(a,b) {
   const rows=Array.from({length:a.length+1},()=>Array(b.length+1).fill(0));
   for(let i=0;i<=a.length;i++)rows[i][0]=i;
@@ -56,18 +58,7 @@ export function searchScore(item,query,kind,index=0,top=null){
  score+=Math.min(10,Math.log10(1+popularityCount(item.viewCount||item.views||item.audience)));
  return score;
 }
-export function rankSearch(result,query=result.correction||result.query||''){
- const ranked={...result},candidates=[],artistIntent=(result.artists||[]).some(a=>normalizeSearch(a.name)===normalizeSearch(query));
- for(const kind of ['songs','artists','albums','playlists']){
-  const entries=(result[kind]||[]).map((item,index)=>({item,index,score:searchScore(item,query,kind,index,result.top)-(artistIntent&&kind==='songs'&&!(' '+normalizeSearch(item.artist)+' ').includes(' '+normalizeSearch(query)+' ')?100:0)})).sort((a,b)=>b.score-a.score||a.index-b.index);
-  ranked[kind]=entries.map(e=>e.item);
-  if(entries.length)candidates.push({kind,id:entries[0].item.id,score:entries[0].score});
- }
- candidates.sort((a,b)=>b.score-a.score);
- ranked.top=candidates[0]?{kind:candidates[0].kind,id:candidates[0].id}:null;
- ranked.categoryOrder=candidates.map(c=>c.kind);
- return ranked;
-}
+export const rankSearch=rankCatalog;
 export function providerItems(result){
  const items=[],seen=new Set();
  for(const ref of result.order||[]){const item=result[ref.kind]?.find(item=>item.id===ref.id),key=ref.kind+':'+ref.id;if(!item||seen.has(key))continue;seen.add(key);items.push({kind:ref.kind,item});}
@@ -75,8 +66,9 @@ export function providerItems(result){
  return items;
 }
 export class MusicSearchClient {
-  constructor(url,{fetcher=(...args)=>fetch(...args),now=Date.now,publicKey=''}={}){this.url=url;this.publicKey=publicKey;this.fetcher=fetcher;this.now=now;this.cache=new Map();}
+  constructor(url,{fetcher=(...args)=>fetch(...args),now=Date.now,publicKey=''}={}){this.url=url;this.publicKey=publicKey;this.fetcher=fetcher;this.now=now;this.cache=new Map();this.native=globalThis.novaDesktop?.nativeCatalog?new NativeCatalogClient():null;}
   async request(input,{signal}={}){
+    if(this.native)return this.native.request(input,{signal});
     const key=JSON.stringify(input),hit=this.cache.get(key);
     if(hit&&this.now()-hit.at<300000)return structuredClone(hit.data);
     const controller=new AbortController(),abort=()=>controller.abort();

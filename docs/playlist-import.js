@@ -1,4 +1,4 @@
-import {normalizeSearch} from './music-search.js?v=4098b6ac99a2';
+import {normalizeSearch} from './music-search.js?v=da2dcaf773b5';
 
 // CSV is decoded on the device. Only title/artist queries leave the importer.
 export function parseCSV(text,delimiter=','){

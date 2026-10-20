@@ -1,4 +1,4 @@
-import {normalizeSearch} from './music-search.js?v=4098b6ac99a2';
+import {normalizeSearch} from './music-search.js?v=da2dcaf773b5';
 export const releaseKind=release=>/^(single|ep)$/i.test(release.kind||release.type||'')?'Singles & EPs':'Albums';
 export function artistReleases(artist,albums,songs,selected){
  const chosen=new Set(selected||[]),tracks=new Map(songs.map(song=>[song.id,song]));

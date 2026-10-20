@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {applyPlayerCommand} from '../docs/connected-player.js';
+import {applyPlayerCommand,snapshotLyrics} from '../docs/connected-player.js';
 import {validSnapshot} from '../docs/connect.js';
 function fixture(){
  let clock=42.75,playing=true;const calls=[];
@@ -44,4 +44,21 @@ test('explicit seeks finish before the connected command is acknowledged',async(
  f.engine.seek=()=>new Promise(resolve=>{finishSeek=resolve});
  const work=applyPlayerCommand({position:8,playing:true,positionIntent:'seek'},f.engine).then(()=>complete=true);
  await Promise.resolve();assert.equal(complete,false);finishSeek();await work;assert.equal(complete,true);
+});
+
+test('Mac keeps session lyrics and calibration before loading audio, and through seeks in either direction',async()=>{
+ const {activeLyric}=await import('../docs/lyrics.js');
+ const lyrics={songID:'abcdefghijk',recordingID:'lmnopqrstuv',loaded:true,plain:'First\nSecond',lines:[{time:0,text:'First'},{time:10,text:'Second'}],offset:1.25,rate:1.02};
+ const snapshot={queue:[{id:lyrics.songID}],index:0,lyrics,position:12,playing:false};
+ const f=fixture();let installed=null;
+ f.engine.lyrics=value=>{installed=value};f.engine.needsLoad=true;
+ f.engine.load=async p=>{assert.equal(installed,lyrics);f.engine.seek(p)};
+ await applyPlayerCommand(snapshot,f.engine);
+ const active=()=>activeLyric(installed.lines,f.clock*installed.rate+installed.offset);
+ assert.equal(active(),1);assert.equal(installed.recordingID,'lmnopqrstuv');
+ f.engine.needsLoad=false;
+ await applyPlayerCommand({...snapshot,position:3,positionIntent:'seek'},f.engine);assert.equal(active(),0);
+ await applyPlayerCommand({...snapshot,position:15,positionIntent:'seek'},f.engine);assert.equal(active(),1);
+ await applyPlayerCommand({...snapshot,queue:[{id:'anotherSong'}]},f.engine);assert.equal(installed,null,'Previous recording cues must not survive a song change');
+ assert.equal(snapshotLyrics(null),null);
 });

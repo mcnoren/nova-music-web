@@ -35,3 +35,8 @@ test('native errors reject pending commands instead of falsely confirming playba
  f.player.receive({request:f.sent[0].request,error:'Stream unavailable'});
  await assert.rejects(work,/Stream unavailable/);f.player.destroy();
 });
+test('native loads include current album and cover art for macOS Now Playing',async()=>{
+ const f=fixture(),artwork='https://example.com/cover.jpg';
+ const work=f.player.loadVideoById({videoId:'abcdefghijk',title:'Track',artist:'Artist',album:'Album',artwork});
+ assert.equal(f.sent[0].album,'Album');assert.equal(f.sent[0].artwork,artwork);f.reply('load');await work;f.player.destroy();
+});
