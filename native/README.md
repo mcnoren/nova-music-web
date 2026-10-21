@@ -1,3 +1,11 @@
+# Lock-screen buffering recovery (October 21, 2026)
+
+Apply `patches/lock-screen-buffering.patch` after `background-playback.patch` in the full Xcode project, and add `LockScreenPlaybackTests.swift` to the test target. The local full project already contains the fix. Installed iPhone apps require a new signed build.
+
+A stream that stalls after playback has started now acquires a finite background assertion immediately on the native stall/waiting signal or a stopped audio clock. The assertion ends when the clock advances or the user pauses. Background recovery reconnects the same recording at its current position after five seconds of no progress, instead of waiting for the foreground 25-second timeout. Current-item identity and playback intent guard stale notifications. The background-task expiration handler now ends its assertion synchronously before returning, as required by [UIKit's expiration handling](https://developer.apple.com/documentation/uikit/uiapplication/beginbackgroundtask(expirationhandler:)).
+
+Seven distinct focused simulator tests passed on iPhone SE (3rd generation), iOS 18.6: real HTTP audio buffer exhaustion and same-song recovery, assertion cleanup after progress/Pause, stale-item notifications, 32-second continuous background playback, native-audio retry, prepared queue advancement and interruption handling. The HTTP regression withholds the remaining audio bytes after initial playback starts; recovery resumed from the stalled position in approximately 5.6 seconds after waiting began. This exercises real AVFoundation network buffering, but simulator background requests do not reproduce physical iOS lock-screen suspension. The user's reported roughly 30-second cutoff still needs confirmation on the rebuilt signed iPhone app.
+
 # iPhone performance (October 21, 2026)
 
 Apply `patches/iphone-performance.patch` after the folder-redesign and background-playback integrations in the full Xcode project. Add `NativePerformanceTests.swift` to its test target. The local full project already contains these changes; do not apply the patch there again.

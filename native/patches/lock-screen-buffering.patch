@@ -1,0 +1,71 @@
+--- a/NovaBrowser/YouTubePlayer.swift
++++ b/NovaBrowser/YouTubePlayer.swift
+@@ -500,6 +500,13 @@
+                 guard item === self.nativePlayer.currentItem else { return }
+                 self.reconnectStream(after: item)
+             }.store(in: &subscriptions)
++        NotificationCenter.default.publisher(for: AVPlayerItem.playbackStalledNotification)
++            .receive(on: RunLoop.main)
++            .sink { [weak self] notification in
++                guard let self, let item = notification.object as? AVPlayerItem,
++                      item === self.nativePlayer.currentItem else { return }
++                self.protectBackgroundBuffering()
++            }.store(in: &subscriptions)
+         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
+             .receive(on: RunLoop.main)
+             .sink { [weak self] notification in self?.interrupted(notification) }
+@@ -566,6 +573,7 @@
+                 }
+                 self.loading = self.intendsPlayback && ((!self.ready && self.error == nil) || self.nativePlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate ||
+                     (self.audioOnly && self.ready && !self.hasStartedPlayback && self.nativePlayer.timeControlStatus == .paused))
++                if self.loading { self.protectBackgroundBuffering() }
+                 self.nativePauseTask?.cancel()
+                 if self.pendingSeek == nil, self.nativePlayer.timeControlStatus == .paused, self.ready, self.intendsPlayback, !self.audioInterrupted,
+                    self.isLive || self.duration <= 0 || self.nativePlayer.currentTime().seconds < self.duration - 0.1,
+@@ -1246,7 +1254,12 @@
+                     self.endNativeBackgroundLoad()
+                 }
+                 previousPosition = position
+-                let limit = self.hasStartedPlayback ? max(25, self.playbackStallTimeout) : self.playbackStallTimeout
++                if !advancing, self.hasStartedPlayback, self.pendingSeek == nil { self.protectBackgroundBuffering() }
++                // A silent background app may be suspended before the foreground
++                // 25-second retry. Reconnect promptly while its finite grant runs.
++                let limit = self.hasStartedPlayback
++                    ? (self.backgroundPlaybackRequested ? min(5, self.playbackStallTimeout) : max(25, self.playbackStallTimeout))
++                    : self.playbackStallTimeout
+                 if movedAt.duration(to: .now) >= .seconds(limit) {
+                     if !self.hasStartedPlayback { self.recoverMusicStartup(reason: "No advancing audio clock within \(limit) seconds") }
+                     else if allowRetry {
+@@ -1670,11 +1683,23 @@
+         }
+     }
+
++    /// Cover gaps in audible output while the native player replenishes buffers.
++    /// This is finite recovery work, not a permanent background keepalive.
++    func protectBackgroundBuffering() {
++        guard audioOnly, backgroundPlaybackRequested, intendsPlayback, !audioInterrupted,
++              currentVideoID != nil else { return }
++        beginNativeBackgroundLoad()
++    }
++
++    var hasNativeBackgroundWork: Bool { nativeLoadBackgroundTask != .invalid }
++
+     private func beginNativeBackgroundLoad() {
+         guard nativeLoadBackgroundTask == .invalid else { return }
+         let epoch = UUID(); nativeBackgroundLoadEpoch = epoch
+         nativeLoadBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Prepare native playback") { [weak self] in
+-            Task { @MainActor in
++            // UIKit calls this synchronously on main just before suspension.
++            // End the assertion before returning rather than enqueueing cleanup.
++            MainActor.assumeIsolated {
+                 guard let self, self.nativeBackgroundLoadEpoch == epoch else { return }
+                 self.endNativeBackgroundLoad()
+                 if !self.ready { self.pause(); self.error = "Background playback could not connect. Retry in the app." }
+@@ -1698,6 +1723,7 @@
+         if loading && intendsPlayback { beginNativeBackgroundLoad() }
+         guard !backgroundPlaybackRequested else { return }
+         backgroundPlaybackRequested = true
++        if intendsPlayback && (!ready || nativePlayer.timeControlStatus == .waitingToPlayAtSpecifiedRate) { protectBackgroundBuffering() }
+         transportRevision = UUID(); videoRestorationTask?.cancel(); videoRestorationTask = nil
+         hdBackgroundAudioActive = webHDActive
+         // The 360p audio clock is already running and synchronized. WebKit's
