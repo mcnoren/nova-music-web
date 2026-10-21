@@ -1,0 +1,527 @@
+--- a/Shared/NovaMusicCore/MusicWatchConnectivity.swift
++++ b/Shared/NovaMusicCore/MusicWatchConnectivity.swift
+@@ -14,6 +14,28 @@
+     var shuffle: Bool
+     var repeatMode: String
+     var updated: Date
++    var lyrics: TrackLyrics? = nil
++    var calibration: LyricCalibration? = nil
++    var queueOffset: Int? = nil
++    var queueCount: Int? = nil
++    var liked: Bool? = nil
++
++    /// WatchConnectivity has a finite message budget. Send a useful queue window
++    /// while retaining absolute positions for commands to the phone.
++    func boundedForWatch(maximumBytes: Int = 48_000) -> WatchPhoneSnapshot {
++        var result = self
++        let low = max(0, min(index, queue.count) - 5), high = min(queue.count, max(low, index + 31))
++        result.queue = Array(queue[low..<high]); result.index = max(0, index - low)
++        result.queueOffset = (queueOffset ?? 0) + low; result.queueCount = queueCount ?? queue.count
++        let encoder = JSONEncoder()
++        while (try? encoder.encode(result).count) ?? Int.max > maximumBytes {
++            if result.queue.count > result.index + 1 { result.queue.removeLast() }
++            else if result.index > 0 { result.queue.removeFirst(); result.index -= 1; result.queueOffset = (result.queueOffset ?? 0) + 1 }
++            else if result.lyrics != nil { result.lyrics = nil; result.calibration = nil }
++            else { break }
++        }
++        return result
++    }
+ }
+ struct WatchPhoneCommand: Codable {
+     var version = 1
+@@ -26,6 +48,7 @@
+     var shuffle: Bool?
+     var context: String?
+     var value: Double?
++    var absoluteQueueIndex: Bool? = nil
+ }
+ struct WatchPhoneChunk: Codable {
+     let id: UUID
+@@ -63,9 +86,13 @@
+         publish()
+         #endif
+     }
+-    func refresh() async { do { _ = try await send(.init(action: "snapshot")) } catch { self.error = error.localizedDescription } }
++    func refresh(silent: Bool = false) async {
++        if silent && (session?.activationState != .activated || session?.isReachable != true) { return }
++        do { _ = try await send(.init(action: "snapshot")); error = nil }
++        catch { if !silent { self.error = error.localizedDescription } }
++    }
+     func control(_ action: String, value: Double? = nil) async {
+-        do { _ = try await send(.init(action: action, revision: snapshot?.revision, value: value)); error = nil }
++        do { _ = try await send(.init(action: action, revision: snapshot?.revision, value: value, absoluteQueueIndex: action == "entry" ? true : nil)); error = nil }
+         catch { self.error = error.localizedDescription }
+     }
+     func play(_ song: YouTubeVideo, queue: [YouTubeVideo], shuffle: Bool, context: String?) async throws {
+@@ -110,14 +137,22 @@
+             } errorHandler: { error in Task { @MainActor in pending.finish(.failure(error)) } }
+         }
+     }
+-    private func accept(_ value: WatchPhoneSnapshot) { guard snapshot.map({ value.updated >= $0.updated }) ?? true else { return }; snapshot = value }
++    func accept(_ value: WatchPhoneSnapshot) { guard snapshot.map({ value.updated >= $0.updated }) ?? true else { return }; snapshot = value }
+     private func currentSnapshot() -> WatchPhoneSnapshot? {
+         guard let store else { return nil }; let player = store.player
+         let next = player.queueEntries.map { $0.id.uuidString }.joined() + (player.currentVideoID ?? "")
+         if signature != next { signature = next; revision = UUID() }
+-        return .init(revision: revision, song: player.currentVideoID.flatMap { player.musicTracks[$0] ?? store.knownVideo($0) } ?? store.current, playing: player.intendsPlayback, time: player.currentTime, duration: player.duration,
+-                     queue: player.queueEntries.map { player.musicTracks[$0.videoID] ?? store.knownVideo($0.videoID) ?? .placeholder($0.videoID) }, index: player.playlistIndex,
++        let index = min(max(0, player.playlistIndex), max(0, player.queueEntries.count - 1))
++        let low = max(0, index - 5), high = min(player.queueEntries.count, index + 31)
++        var value = WatchPhoneSnapshot(revision: revision, song: player.currentVideoID.flatMap { player.musicTracks[$0] ?? store.knownVideo($0) } ?? store.current, playing: player.intendsPlayback, time: player.currentTime, duration: player.duration,
++                     queue: player.queueEntries[low..<high].map { player.musicTracks[$0.videoID] ?? store.knownVideo($0.videoID) ?? .placeholder($0.videoID) }, index: index - low,
+                      shuffle: player.shuffled, repeatMode: player.repeatMode.rawValue, updated: Date())
++        value.queueOffset = low; value.queueCount = player.queueEntries.count
++        #if os(iOS)
++        value.lyrics = player.trackLyrics; value.calibration = player.lyricCalibration
++        value.liked = value.song.map { store.isLiked($0) }
++        #endif
++        return value.boundedForWatch()
+     }
+     private func publish() {
+         #if os(iOS)
+@@ -157,6 +192,9 @@
+         guard command.version == 1, abs(command.created.timeIntervalSinceNow) < 30, let store else { return .init(error: "That command expired. Refresh the iPhone controls.") }
+         let player = store.player
+         if ["remove", "moveUp", "moveDown", "entry", "clear", "enqueue", "enqueueNext"].contains(command.action), command.revision != currentSnapshot()?.revision { return .init(snapshot: currentSnapshot(), error: "The iPhone queue changed. Try again.") }
++        if command.action == "entry", command.absoluteQueueIndex != true, (currentSnapshot()?.queueOffset ?? 0) > 0 {
++            return .init(snapshot: currentSnapshot(), error: "Update Nova Music on Apple Watch to choose a song from this queue.")
++        }
+         switch command.action {
+         case "snapshot": break
+         case "play": player.play()
+@@ -195,8 +233,23 @@
+     func finish(_ result: Result<WatchPhoneReply, Error>) { guard let continuation else { return }; self.continuation = nil; timeout?.cancel(); continuation.resume(with: result) }
+ }
+ extension WatchPhoneBridge: WCSessionDelegate {
+-    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) { Task { @MainActor in reachable = session.isReachable; if let data = session.receivedApplicationContext["novaPlayback"] as? Data, let value = try? JSONDecoder().decode(WatchPhoneSnapshot.self, from: data) { accept(value) } } }
+-    nonisolated func sessionReachabilityDidChange(_ session: WCSession) { Task { @MainActor in reachable = session.isReachable } }
++    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
++        Task { @MainActor in
++            reachable = session.isReachable
++            if let data = session.receivedApplicationContext["novaPlayback"] as? Data, let value = try? JSONDecoder().decode(WatchPhoneSnapshot.self, from: data) { accept(value) }
++            #if os(watchOS)
++            if reachable { await refresh(silent: true) }
++            #endif
++        }
++    }
++    nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
++        Task { @MainActor in
++            reachable = session.isReachable
++            #if os(watchOS)
++            if reachable { await refresh(silent: true) }
++            #endif
++        }
++    }
+     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+         guard let data = applicationContext["novaPlayback"] as? Data, let value = try? JSONDecoder().decode(WatchPhoneSnapshot.self, from: data) else { return }; Task { @MainActor in accept(value) }
+     }
+--- a/NovaMusicWatch/WatchPlayerViews.swift
++++ b/NovaMusicWatch/WatchPlayerViews.swift
+@@ -14,14 +14,79 @@
+         NavigationStack {
+             TabView(selection: $page) {
+                 WatchLyricsView(player: player).tag(0)
+-                WatchTransportView(store: store, player: player, options: $options, active: page == 1).tag(1)
+-                WatchQueueView(store: store, player: player).tag(2)
++                WatchArtworkPlayerView(store: store, player: player, options: $options, showControls: { page = 2 }, close: { dismiss() }).tag(1)
++                WatchTransportView(store: store, player: player, options: $options, active: page == 2).tag(2)
++                WatchQueueView(store: store, player: player).tag(3)
+             }.tabViewStyle(.page(indexDisplayMode: .automatic)).navigationTitle(phone.mode == .phone ? "iPhone" : "Now Playing")
++                .toolbar(page == 1 ? .hidden : .visible, for: .navigationBar)
+                 .toolbar { ToolbarItem(placement: .topBarLeading) { Button { dismiss() } label: { Image(systemName: "chevron.down") }.accessibilityLabel("Return to Music") } }
+                 .sheet(isPresented: $options) { NavigationStack { WatchPlayerActions(store: store, player: player) } }
+         }
+     }
+ }
++/// The square cover stays fully visible; tapping it removes the controls.
++/// The following page keeps volume, scrubbing and large-text controls accessible.
++struct WatchArtworkPlayerView: View {
++    @ObservedObject var store: YouTubeStore
++    @ObservedObject var player: YouTubePlayer
++    @Binding var options: Bool
++    var showControls: () -> Void
++    var close: () -> Void
++    @ObservedObject private var phone = WatchPhoneBridge.shared
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++    @Environment(\.isLuminanceReduced) private var dimmed
++    @Environment(\.dynamicTypeSize) private var typeSize
++    @State private var chrome = true
++    private var song: YouTubeVideo? { phone.mode == .phone ? phone.snapshot?.song : store.current }
++    private var playing: Bool { phone.mode == .phone ? phone.snapshot?.playing ?? false : player.intendsPlayback }
++    private var artwork: URL? { song.flatMap { WatchDownloadStore.shared.cachedArtwork($0.id) ?? $0.thumbnail } }
++    var body: some View {
++        GeometryReader { geometry in
++            ZStack {
++                Color.black
++                Button {
++                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { chrome.toggle() }
++                } label: {
++                    Group {
++                        if let artwork, artwork.isFileURL, let image = UIImage(contentsOfFile: artwork.path) {
++                            Image(uiImage: image).resizable().scaledToFit()
++                        } else {
++                            AsyncImage(url: artwork) { image in image.resizable().scaledToFit() } placeholder: {
++                                Image(systemName: "music.note").font(.system(size: 64, weight: .light)).foregroundStyle(.secondary)
++                            }
++                        }
++                    }.frame(width: geometry.size.width, height: geometry.size.height).contentShape(Rectangle())
++                }.buttonStyle(.plain).accessibilityLabel(chrome ? "Hide artwork controls" : "Show artwork controls")
++                    .accessibilityHint(song.map { "\($0.title), \($0.channel)" } ?? "Choose a song from Music")
++                    .accessibilityIdentifier("watch.fullArtwork")
++                if chrome && !dimmed {
++                    VStack(spacing: 0) {
++                        HStack {
++                            Button(action: close) { Image(systemName: "chevron.down").frame(width: 36, height: 36).background(.black.opacity(0.6), in: Circle()) }.accessibilityLabel("Return to Music")
++                            Spacer()
++                            Button(action: showControls) { Image(systemName: phone.mode == .phone ? "iphone" : "applewatch").frame(width: 36, height: 36).background(.black.opacity(0.6), in: Circle()) }.accessibilityLabel("Playback controls")
++                        }.padding(.horizontal, 8).padding(.top, 20)
++                        Spacer(minLength: 0)
++                        VStack(spacing: 6) {
++                            Text(song?.title ?? "Choose Music").font(.caption.weight(.semibold)).lineLimit(1)
++                            HStack(spacing: 8) {
++                                Button { command("previous") { player.previous() } } label: { Image(systemName: "backward.end.fill").frame(width: 34, height: 38) }.accessibilityLabel("Previous song")
++                                Button { command(playing ? "pause" : "play") { player.toggle() } } label: { Image(systemName: playing ? "pause.fill" : "play.fill").font(.title3.bold()).frame(width: 44, height: 40) }.accessibilityLabel(playing ? "Pause" : "Play").accessibilityIdentifier("watch.playPause")
++                                Button { command("next") { player.next() } } label: { Image(systemName: "forward.end.fill").frame(width: 34, height: 38) }.accessibilityLabel("Next song")
++                                Button { options = true } label: { Image(systemName: "ellipsis").frame(width: 28, height: 38) }.accessibilityLabel("Playback options")
++                            }.disabled(song == nil || phone.mode == .phone && !phone.reachable)
++                        }.padding(.top, 18).padding(.bottom, 16).frame(maxWidth: .infinity)
++                            .background(LinearGradient(colors: [.clear, .black.opacity(0.92)], startPoint: .top, endPoint: .bottom))
++                    }.buttonStyle(.plain).foregroundStyle(.white)
++                }
++            }.frame(width: geometry.size.width, height: geometry.size.height)
++        }.ignoresSafeArea()
++            .onChange(of: typeSize, initial: true) { _, value in if value >= .xxxLarge { showControls() } }
++            .task(id: phone.mode) { if phone.mode == .phone { await phone.refresh(silent: true) } }
++    }
++    private func command(_ action: String, local: () -> Void) { if phone.mode == .phone { Task { await phone.control(action) } } else { local() } }
++}
++
+ struct WatchTransportView: View {
+     @ObservedObject var store: YouTubeStore
+     @ObservedObject var player: YouTubePlayer
+@@ -41,7 +106,7 @@
+         GeometryReader { geometry in
+             if dynamicTypeSize >= .xxxLarge { ScrollView { transportContent(geometry) } }
+             else { transportContent(geometry) }
+-        }.sheet(isPresented: $seeking) { WatchSeekView(player: player) }.task(id: phone.mode) { if phone.mode == .phone { await phone.refresh() } }
++        }.sheet(isPresented: $seeking) { WatchSeekView(player: player) }.task(id: phone.mode) { if phone.mode == .phone { await phone.refresh(silent: true) } }
+     }
+     private func transportContent(_ geometry: GeometryProxy) -> some View {
+             VStack(spacing: 5) {
+@@ -106,22 +171,26 @@
+     @ObservedObject private var phone = WatchPhoneBridge.shared
+     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+     @State private var following = true
++    private var remote: Bool { phone.mode == .phone }
++    private var lyrics: TrackLyrics? { remote ? phone.snapshot?.lyrics : player.lyrics }
++    private var calibration: LyricCalibration { remote ? phone.snapshot?.calibration ?? .init() : player.calibration }
++    private var time: Double { remote ? phone.snapshot?.time ?? 0 : player.currentTime }
++    private var playing: Bool { remote ? phone.snapshot?.playing ?? false : player.playing }
+     var body: some View {
+         Group {
+-            if phone.mode == .phone { WatchEmptyState(title: "Lyrics on iPhone", message: "Choose Apple Watch in Playback Device to read lyrics here.", symbol: "text.quote") }
+-            else if player.lyricsLoading { ProgressView("Finding lyrics…") }
+-            else if let lyrics = player.lyrics {
++            if !remote && player.lyricsLoading { ProgressView("Finding lyrics…") }
++            else if let lyrics {
+                 if lyrics.instrumental { WatchEmptyState(title: "Instrumental", message: "Let the music speak.", symbol: "waveform") }
+                 else if !lyrics.lines.isEmpty {
+                     ScrollViewReader { proxy in
+                         ScrollView {
+                             LazyVStack(alignment: .leading, spacing: 18) {
+                                 ForEach(lyrics.lines) { line in
+-                                    Button { player.seek(to: player.calibration.playbackTime(for: line.time)) } label: {
++                                    Button { let target = calibration.playbackTime(for: line.time); if remote { Task { await phone.control("seek", value: target) } } else { player.seek(to: target) } } label: {
+                                         Group {
+                                             if let range = lyrics.breakRange(for: line) {
+-                                                MusicInterludeDots(range: range, time: player.calibration.lyricTime(for: player.currentTime), active: active == line.id,
+-                                                    playing: player.playing, scale: 0.6, reduceMotion: reduceMotion)
++                                                MusicInterludeDots(range: range, time: calibration.lyricTime(for: time), active: active == line.id,
++                                                    playing: playing, scale: 0.6, reduceMotion: reduceMotion)
+                                             } else { Text(line.text).font(.system(.title3, design: .rounded, weight: .bold)) }
+                                         }.foregroundStyle(active == line.id ? .white : .white.opacity(0.35)).frame(maxWidth: .infinity, alignment: .leading)
+                                     }.buttonStyle(.plain).id(line.id)
+@@ -133,10 +202,10 @@
+                             .overlay(alignment: .bottomTrailing) { if !following { Button { following = true; if let active { proxy.scrollTo(active, anchor: .center) } } label: { Image(systemName: "location.fill") }.accessibilityLabel("Follow lyrics") } }
+                     }
+                 } else { ScrollView { Text(lyrics.plainText ?? "No lyrics available").font(.body).padding() } }
+-            } else { VStack { WatchEmptyState(title: "Lyrics unavailable", message: player.lyricError ?? "This recording doesn’t have lyrics yet.", symbol: "text.quote"); Button("Try Again") { player.loadLyrics() } } }
++            } else { VStack { WatchEmptyState(title: "Lyrics unavailable", message: remote ? "Lyrics will appear when available on your iPhone." : player.lyricError ?? "This recording doesn’t have lyrics yet.", symbol: "text.quote"); Button("Try Again") { if remote { Task { await phone.refresh() } } else { player.loadLyrics() } } } }
+         }
+     }
+-    private var active: Int? { player.lyrics?.activeLine(at: player.calibration.lyricTime(for: player.currentTime)) }
++    private var active: Int? { lyrics?.activeLine(at: calibration.lyricTime(for: time)) }
+ }
+ struct WatchQueueView: View {
+     @ObservedObject var store: YouTubeStore
+@@ -153,13 +222,16 @@
+                     if position > index {
+                         NavigationLink { List {
+                             Text(song.title).font(.headline)
+-                            Button("Play Now") { command("entry", value: position) { player.playQueueEntry(player.queueEntries[position].id) } }
++                            Button("Play Now") { command("entry", value: position + (phone.snapshot?.queueOffset ?? 0)) { player.playQueueEntry(player.queueEntries[position].id) } }
+                             Button("Move Up") { command("moveUp", value: position-index-1) { player.moveUpcomingQueue(from: IndexSet(integer: position-index-1), to: max(0,position-index-2)) } }.disabled(position == index+1)
+                             Button("Move Down") { command("moveDown", value: position-index-1) { player.moveUpcomingQueue(from: IndexSet(integer: position-index-1), to: position-index+1) } }.disabled(position == songs.count-1)
+                             Button("Remove", role: .destructive) { command("remove", value: position-index-1) { player.removeUpcomingQueue(at: IndexSet(integer: position-index-1)) } }
+                         }.navigationTitle("Queue") } label: { VStack(alignment: .leading) { Text(song.title).lineLimit(2); Text(song.channel).font(.caption2).foregroundStyle(.secondary) } }
+                     }
+                 }
++            }
++            if remote, let total = phone.snapshot?.queueCount, let offset = phone.snapshot?.queueOffset, offset + songs.count < total {
++                Text("Showing the next \(max(0, songs.count - index - 1)) songs. The rest stay queued on iPhone.").font(.caption2).foregroundStyle(.secondary)
+             }
+             if !remote { NavigationLink("Add Songs") { WatchSearchView(store: store, choose: { song in player.musicTracks[song.id] = song; player.enqueue([song.id], next: false) }) } }
+             Button("Clear Upcoming", role: .destructive) { command("clear") { player.clearUpcomingQueue() } }.disabled(songs.count <= index+1)
+@@ -185,7 +257,9 @@
+             } else {
+                 Button("Shuffle") { Task { await phone.control("shuffle") } }
+                 Button("Repeat") { Task { await phone.control("repeat") } }
+-                Button("Like Current Song") { Task { await phone.control("like") } }
++                Button(phone.snapshot?.liked == true ? "Unlike Current Song" : "Like Current Song") { Task { await phone.control("like") } }
++                if let song = phone.snapshot?.song { NavigationLink("Song Information") { WatchSongInfoView(song: song) } }
++                NavigationLink("System Now Playing") { NowPlayingView() }
+             }
+         }.navigationTitle("Options")
+     }
+--- a/NovaMusicWatch/WatchApp.swift
++++ b/NovaMusicWatch/WatchApp.swift
+@@ -24,6 +24,11 @@
+     private var task: Task<Void, Never>?
+     private var handled = Set<UUID>()
+     private lazy var resolver = MusicSiriResolver(store: MusicPlaybackSession.store)
++    func presentPhonePlayback() {
++        WatchPhoneBridge.shared.mode = .phone
++        player = true
++        Task { await WatchPhoneBridge.shared.refresh(silent: true) }
++    }
+     func handle(_ intent: INPlayMediaIntent, receipt: UUID = UUID(), completion: ((INIntentResponse) -> Void)? = nil) {
+         guard handled.insert(receipt).inserted else { completion?(INPlayMediaIntentResponse(code: .success, userActivity: nil)); return }
+         if handled.count > 100 { handled = [receipt] }
+@@ -67,6 +72,12 @@
+     }
+ }
+ final class WatchApplicationDelegate: NSObject, WKApplicationDelegate {
++    func handleRemoteNowPlayingActivity() {
++        // watchOS calls this when the paired iPhone starts audio, respecting the
++        // user's Auto-Launch Audio Apps setting. No workout/background workaround.
++        WatchPhoneBridge.shared.connect(MusicPlaybackSession.store)
++        WatchNavigation.shared.presentPhonePlayback()
++    }
+     func handle(_ userActivity: NSUserActivity) {
+         let archived = (userActivity.userInfo?["novaIntent"] as? Data).flatMap { try? NSKeyedUnarchiver.unarchivedObject(ofClass: INPlayMediaIntent.self, from: $0) }
+         guard let intent = userActivity.interaction?.intent as? INPlayMediaIntent ?? archived else { return }
+--- a/NovaMusicWatch/WatchWidgetSnapshot.swift
++++ b/NovaMusicWatch/WatchWidgetSnapshot.swift
+@@ -18,9 +18,10 @@
+ enum WatchEnvironment {
+     static let defaults: UserDefaults = {
+         #if DEBUG
+-        if ProcessInfo.processInfo.arguments.contains("-nova-watch-ui-testing") {
++        if ProcessInfo.processInfo.arguments.contains("-nova-watch-ui-testing") || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+             let defaults = UserDefaults(suiteName: "NovaMusicWatch.UITesting")!
+             defaults.removePersistentDomain(forName: "NovaMusicWatch.UITesting")
++            defaults.set(false, forKey: "watch.icloud.enabled")
+             return defaults
+         }
+         #endif
+--- a/NovaMusicWatch/WatchAdvancedViews.swift
++++ b/NovaMusicWatch/WatchAdvancedViews.swift
+@@ -9,7 +9,7 @@
+             NavigationLink("New Playlist") { WatchPlaylistEditor(store: store) }
+             NavigationLink("New Smart Playlist") { WatchSmartPlaylistEditor(store: store) }
+             NavigationLink("Import from Spotify") { WatchSpotifyImportView(store: store) }
+-            ForEach(store.playlists) { playlist in NavigationLink { WatchPlaylistView(store: store, id: playlist.id) } label: { HStack { WatchCover(url: playlist.artwork, size: 38, choice: playlist.customArtwork); VStack(alignment: .leading) { Text(playlist.name); Text("\(playlist.videos.count) songs").font(.caption2).foregroundStyle(.secondary) } } } }
++            ForEach(store.libraryPlaylists) { playlist in NavigationLink { WatchPlaylistView(store: store, id: playlist.id) } label: { HStack { WatchCover(url: playlist.artwork, size: 38, choice: playlist.customArtwork); VStack(alignment: .leading) { Text(playlist.name); Text("\(playlist.videos.count) songs").font(.caption2).foregroundStyle(.secondary) } } } }
+         }.navigationTitle("Playlists")
+     }
+ }
+@@ -128,7 +128,25 @@
+ struct WatchSongInfoView: View {
+     var song: YouTubeVideo
+     @State private var description: MusicDescription?
+-    var body: some View { List { Text(song.title).font(.headline); Text(song.channel); if let title = song.albumTitle { Text(title) }; if let duration = song.durationLabel { Text(duration) }; if let composer = song.composer { Text("Written by " + composer) }; if let description { Text(description.text); Link("Source", destination: description.source) } }.navigationTitle("Song Info").task { description = await MusicDescriptions.shared.description(title: song.title, artist: song.channel, subject: .song) } }
++    @State private var loading = true
++    @State private var attempt = 0
++    var body: some View {
++        List {
++            Text(song.title).font(.headline); Text(song.channel).foregroundStyle(.secondary)
++            if let title = song.albumTitle { Text(title) }
++            if let duration = song.durationLabel { Text(duration) }
++            if let composer = song.composer { Text("Written by " + composer) }
++            Section("About this song") {
++                if let description { Text(description.text); Link(description.sourceName, destination: description.source) }
++                else if loading { ProgressView("Finding background…") }
++                else { Text("No verified background is available for this song yet."); Button("Try Again") { attempt += 1 } }
++            }
++        }.navigationTitle("Song Info").task(id: song.id + String(attempt)) {
++            loading = true
++            let result = await MusicDescriptions.shared.songBackground(title: song.title, artist: MusicLyricsSource.cleanArtist(song.channel), refresh: attempt > 0)
++            guard !Task.isCancelled else { return }; description = result; loading = false
++        }
++    }
+ }
+ struct WatchAlbumPlaylistPicker: View {
+     @ObservedObject var store: YouTubeStore
+@@ -233,30 +251,110 @@
+ }
+ struct WatchFoldersView: View {
+     @ObservedObject var store: YouTubeStore
+-    var body: some View { List { NavigationLink("Create Folder") { WatchFolderEditor(store: store) }; ForEach(store.musicFolders) { folder in NavigationLink { WatchFolderView(store: store, id: folder.id) } label: { HStack { WatchCover(url: folder.albums.first?.artwork, size: 40, symbol: "folder.fill", choice: folder.artwork); Text(folder.name) } } } }.navigationTitle("Folders") }
++    var body: some View { List { NavigationLink("Create Folder") { WatchFolderEditor(store: store) }; ForEach(store.musicFolders) { folder in NavigationLink { WatchFolderView(store: store, id: folder.id) } label: { HStack { WatchCover(url: folder.albums.first?.artwork, size: 40, symbol: "folder.fill", choice: folder.artwork).overlay(alignment: .bottomTrailing) { Image(systemName: "folder.fill").font(.system(size: 9)).padding(3).background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 4)) }; Text(folder.name).lineLimit(1) } } } }.navigationTitle("Folders") }
+ }
+ struct WatchFolderView: View {
+     @ObservedObject var store: YouTubeStore
+     var id: UUID
+     @State private var failure: String?
++    @State private var actions: MusicFolderItem?
++    private var items: [MusicFolderItem] { store.folderItems(id) }
+     var body: some View {
+         List {
+             if let folder = store.musicFolder(id) {
+-                Button("Shuffle Folder") { Task { do { let songs = try await MusicFolderQueue.tracks(albums: folder.albums, playlists: folder.playlistIDs.compactMap { store.playlist($0) }); store.shufflePlaylist(songs, music: true); WatchNavigation.shared.player = true } catch { failure = error.localizedDescription } } }
+-                NavigationLink("Add or Remove Items") { WatchFolderContentsEditor(store: store, id: id) }
+-                NavigationLink("Rename Folder") { WatchFolderEditor(store: store, id: id) }
+-                NavigationLink("Edit Artwork") { WatchArtworkEditor(store: store, target: .folder(id)) }
+-                ForEach(store.folderItems(id)) { item in
+-                    switch item {
+-                    case .album(let album): NavigationLink(album.title) { WatchAlbumView(store: store, album: album) }
+-                    case .playlist(let playlistID): NavigationLink(store.playlist(playlistID)?.name ?? "Playlist") { WatchPlaylistView(store: store, id: playlistID) }
+-                    }
+-                    Button(store.isFolderItemPinned(item, in: id) ? "Unpin" : "Pin") { store.toggleFolderItemPin(item, in: id) }.font(.caption2)
+-                }
++                HStack {
++                    Button { Task { do { let songs = try await MusicFolderQueue.tracks(albums: folder.albums, playlists: folder.playlistIDs.compactMap { store.playlist($0) }); store.shufflePlaylist(songs, music: true); WatchNavigation.shared.player = true } catch { failure = error.localizedDescription } } } label: { Image(systemName: "shuffle").frame(width: 38, height: 38) }.accessibilityLabel("Shuffle folder")
++                    Spacer()
++                    Button { store.setFolderGallery(folder.gallery != true, in: id) } label: { Image(systemName: folder.gallery == true ? "list.bullet" : "square.grid.2x2").frame(width: 38, height: 38) }.accessibilityLabel(folder.gallery == true ? "List view" : "Gallery view")
++                    NavigationLink { List {
++                        NavigationLink("Add or Remove Items") { WatchFolderContentsEditor(store: store, id: id) }
++                        NavigationLink("Rename Folder") { WatchFolderEditor(store: store, id: id) }
++                        NavigationLink("Edit Artwork") { WatchArtworkEditor(store: store, target: .folder(id)) }
++                    }.navigationTitle("Folder Options") } label: { Image(systemName: "ellipsis").frame(width: 30, height: 38) }.accessibilityLabel("Folder options")
++                }.buttonStyle(.plain)
++                if folder.gallery == true {
++                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
++                        ForEach(items) { item in collection(item, gallery: true) }
++                    }.listRowBackground(Color.clear)
++                } else { ForEach(items) { item in collection(item, gallery: false) } }
++                if items.isEmpty { Text("Add albums and playlists using Folder options.").font(.caption) }
+                 if let failure { Text(failure).font(.caption) }
+             } else { Text("Folder Unavailable") }
+         }.navigationTitle(store.musicFolder(id)?.name ?? "Folder")
+-    }
++            .sheet(item: $actions) { item in NavigationStack {
++                List {
++                    NavigationLink("Replace") { WatchFolderReplacementView(store: store, folderID: id, old: item) }
++                    NavigationLink("Move") {
++                        List {
++                            Text("Move \(title(item)) before:").font(.caption)
++                            ForEach(items.filter { $0.id != item.id }) { target in Button(title(target)) {
++                                var order = items; order.removeAll { $0.id == item.id }
++                                if let index = order.firstIndex(where: { $0.id == target.id }) { order.insert(item, at: index); store.setFolderItemOrder(order, in: id) }
++                                actions = nil
++                            } }
++                            Button("Move to End") { var order = items; order.removeAll { $0.id == item.id }; order.append(item); store.setFolderItemOrder(order, in: id); actions = nil }
++                        }.navigationTitle("Move Item")
++                    }
++                    Button(store.isFolderItemPinned(item, in: id) ? "Unpin" : "Pin") { store.toggleFolderItemPin(item, in: id); actions = nil }
++                    Button("Remove from Folder", role: .destructive) { store.setFolder(id, contains: item, included: false); actions = nil }
++                }.navigationTitle(title(item))
++            } }
++    }
++    private func title(_ item: MusicFolderItem) -> String { switch item { case .album(let a): a.title; case .playlist(let p): store.playlist(p)?.name ?? "Playlist" } }
++    @ViewBuilder private func collection(_ item: MusicFolderItem, gallery: Bool) -> some View {
++        HStack(spacing: 2) {
++            NavigationLink {
++                switch item { case .album(let album): WatchAlbumView(store: store, album: album); case .playlist(let playlist): WatchPlaylistView(store: store, id: playlist) }
++            } label: {
++                if gallery { VStack(alignment: .leading, spacing: 5) { cover(item, size: 60); Text(title(item)).font(.caption2).lineLimit(1) } }
++                else { HStack { cover(item, size: 40); Text(title(item)).lineLimit(1); Spacer(minLength: 0); if store.isFolderItemPinned(item, in: id) { Image(systemName: "pin.fill").font(.caption2) } } }
++            }
++            Button { actions = item } label: { Image(systemName: "ellipsis").font(.caption2).frame(width: gallery ? 20 : 26, height: 38) }.buttonStyle(.plain).accessibilityLabel("Options for " + title(item))
++        }
++    }
++    @ViewBuilder private func cover(_ item: MusicFolderItem, size: CGFloat) -> some View {
++        switch item {
++        case .album(let album): WatchCover(url: album.artwork, size: size)
++        case .playlist(let id): WatchCover(url: store.playlist(id)?.artwork, size: size, symbol: "music.note.list", choice: store.playlist(id)?.customArtwork)
++        }
++    }
++}
++struct WatchFolderReplacementView: View {
++    @ObservedObject var store: YouTubeStore
++    var folderID: UUID
++    var old: MusicFolderItem
++    @State private var query = ""
++    @State private var catalog = YouTubeAPI.MusicCatalog()
++    @State private var loading = false
++    @State private var failure: String?
++    @Environment(\.dismiss) private var dismiss
++    private var albums: [YouTubeMusicAlbum] { query.isEmpty ? store.albumsAvailableForFolders : catalog.albums }
++    var body: some View {
++        List {
++            TextField("Search online", text: $query)
++            if loading { ProgressView() }
++            if let failure { Text(failure).font(.caption) }
++            Section("Albums") { ForEach(albums.filter { !store.folder(folderID, contains: .album($0)) }) { album in
++                Button { replace(.album(album)) } label: { HStack { WatchCover(url: album.artwork, size: 36); VStack(alignment: .leading) { Text(album.title).lineLimit(1); Text(album.artist).font(.caption2).foregroundStyle(.secondary).lineLimit(1) } } }
++            } }
++            Section("Playlists") { ForEach(store.playlists.filter { !store.folder(folderID, contains: .playlist($0.id)) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }) { playlist in Button(playlist.name) { replace(.playlist(playlist.id)) } } }
++            if !query.isEmpty { Section("Online Playlists") { ForEach(catalog.playlists.filter { source in !store.playlists.contains { $0.youtubePlaylistID == source.id && store.folder(folderID, contains: .playlist($0.id)) } }) { source in Button(source.title) {
++                if let existing = store.playlists.first(where: { $0.youtubePlaylistID == source.id }) { replace(.playlist(existing.id)) }
++                else {
++                    let playlist = YouTubePlaylist(name: source.title, youtubePlaylistID: source.id, sourceArtwork: source.artwork, author: source.author, folderOnly: true)
++                    store.playlists.append(playlist); replace(.playlist(playlist.id)); store.persistPlaylists()
++                }
++            } } } }
++        }.navigationTitle("Replace Item").task(id: query) {
++            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { loading = false; failure = nil; catalog = .init(); return }
++            do {
++                try await Task.sleep(for: .milliseconds(350)); try Task.checkCancellation(); loading = true; failure = nil
++                let result = try await NativeMusicCatalog().search(query, kind: .all)
++                try Task.checkCancellation(); catalog = result; loading = false
++            } catch { if !Task.isCancelled { loading = false; failure = error.localizedDescription } }
++        }
++    }
++    private func replace(_ replacement: MusicFolderItem) { store.replaceFolderItem(old, with: replacement, in: folderID); dismiss() }
+ }
+ struct WatchFolderContentsEditor: View {
+     @ObservedObject var store: YouTubeStore
+--- a/NovaMusicWatch/WatchViews.swift
++++ b/NovaMusicWatch/WatchViews.swift
+@@ -37,6 +37,11 @@
+         }
+         .sheet(isPresented: $navigation.player) { WatchPlayerView(store: store) }
+         .alert("Nova Music", isPresented: Binding(get: { store.musicActionError != nil || phone.error != nil }, set: { if !$0 { store.musicActionError = nil; phone.error = nil } })) { Button("OK") { store.musicActionError = nil; phone.error = nil } } message: { Text(store.musicActionError ?? phone.error ?? "") }
++        .onChange(of: phone.snapshot?.playing, initial: true) { _, playing in
++            guard playing == true, let snapshot = phone.snapshot, snapshot.song != nil,
++                  abs(snapshot.updated.timeIntervalSinceNow) < 90, !player.intendsPlayback else { return }
++            navigation.presentPhonePlayback()
++        }
+         .onAppear { guard !launched else { return }; launched = true; if player.intendsPlayback || ProcessInfo.processInfo.arguments.contains("-nova-watch-preview-player") { navigation.player = true } }
+     }
+ }
+@@ -73,7 +78,7 @@
+     @ObservedObject var store: YouTubeStore
+     var body: some View {
+         List {
+-            NavigationLink { WatchPlaylistsView(store: store) } label: { WatchMenuRow(title: "Playlists", symbol: "music.note.list", detail: "\(store.playlists.count)") }
++            NavigationLink { WatchPlaylistsView(store: store) } label: { WatchMenuRow(title: "Playlists", symbol: "music.note.list", detail: "\(store.libraryPlaylists.count)") }
+             NavigationLink { WatchArtistsView(store: store) } label: { WatchMenuRow(title: "Artists", symbol: "person.2.fill", detail: "\(store.followedArtists.count)") }
+             NavigationLink { WatchAlbumsView(store: store, albums: store.likedAlbums) } label: { WatchMenuRow(title: "Albums", symbol: "square.stack", detail: "\(store.likedAlbums.count)") }
+             NavigationLink { WatchSongList(store: store, title: "Liked Songs", songs: store.likedSongs) } label: { WatchMenuRow(title: "Liked Songs", symbol: "heart.fill", detail: "\(store.likedSongs.count)") }
+--- a/NovaMusicWatch/Info.plist
++++ b/NovaMusicWatch/Info.plist
+@@ -51,6 +51,8 @@
+ 	<array>
+ 		<string>audio</string>
+ 	</array>
++	<key>PUICAutoLaunchAudioOptOut</key>
++	<false/>
+ 	<key>WKApplication</key>
+ 	<true/>
+ 	<key>WKBackgroundModes</key>
+--- a/NovaMusicWatch/Assets.xcassets/AppIcon.appiconset/Contents.json
++++ b/NovaMusicWatch/Assets.xcassets/AppIcon.appiconset/Contents.json
+@@ -1 +1 @@
+-{"images":[{"filename":"AppIcon.png","idiom":"watch","platform":"watchos","size":"1024x1024"}],"info":{"author":"xcode","version":1}}
++{"images":[{"filename":"AppIcon.png","idiom":"universal","platform":"watchos","size":"1024x1024"}],"info":{"author":"xcode","version":1}}

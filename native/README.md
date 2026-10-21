@@ -1,3 +1,9 @@
+# Apple Watch experience (October 21, 2026)
+
+The Watch app now presents complete cover artwork with controls that hide on tap, includes the app icon, and handles Apple’s companion Now Playing launch to select iPhone playback. Phone lyrics, calibrated seeking, song information, bounded queue updates, and richer folder list/gallery/replacement controls are included. Large text uses the scrollable transport screen.
+
+See [Watch integration](watch/README.md) for source, patch, tests and installation instructions. This repository publishes native integration source; both native apps must be rebuilt and installed. Automatic opening honors the Watch’s Auto-Launch Audio Apps system setting. Real paired-device audio/launch verification remains required.
+
 # Song backgrounds and background CPU fix (October 21, 2026)
 
 Apply `patches/song-info-and-background-cpu.patch` after the prior native integrations, and copy the updated `MusicAccountSync.swift` adapter into the full app. Add `BackgroundCPUAndSongInfoTests.swift` and `PlaybackSyncEfficiencyTests.swift` to its test target. The local full Xcode project already contains these changes.
