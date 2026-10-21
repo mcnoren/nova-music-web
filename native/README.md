@@ -1,3 +1,13 @@
+# Folder redesign and direct reordering (October 20, 2026)
+
+The iPhone/iPad folder screen now has compact controls, single-line collection titles, actual album/playlist artwork, folder badges, no type filter and no arrangement mode. A shared native UICollectionView handles long-press drag previews, insertion gaps, drops and edge scrolling in folder list/gallery views, the queue, playlist song management and layout ordering. Editable playlist pages also support direct song dragging with the existing selection table and continuous scrolling of its containing view. The genre list no longer needs an Edit button.
+
+The Mac/web interface uses the same long-press gesture in folders, editable playlists, artist lists and the queue. Loaded pages update in place, preserving image elements and focus rather than showing an intermediate loading screen. The sidebar has separate labeled sections, independent Show more controls, visible pins and folder badges over custom covers. Playback resolves official audio even when incoming metadata has no video type, on both web and Mac, and prepares that edition for the next native queued song. Album/live/remix distinctions remain protected.
+
+For a full app that already contains the previous folder and playlist-membership integrations, apply `patches/folder-redesign.patch` from the Xcode project root. Add `FolderRedesignTests.swift` to the test target. The refreshed `folder-ui.patch` contains the complete folder views for integrations from the original baseline; do not apply it on top of `folder-redesign.patch`. When integrating from that original baseline, apply `folder-ui.patch` and `playlist-membership.patch`, then apply only the `MusicLibrarySelection.swift`, `YouTubeView.swift`, and `MusicCatalog.swift` portions of `folder-redesign.patch`.
+
+Validation: 178 web tests, browser DOM preservation checks, four focused iPhone tests, the iPad folder rendering/drag configuration test, and the Mac build. Native simulator tests require live iCloud bootstrap disabled when code signing is off. Source is published here; installed native apps require rebuilding with the full Xcode project.
+
 # Playlist library membership and smooth folder dragging (October 20, 2026)
 
 Removing a playlist from the library now preserves its identity, songs, artwork, folder slots and folder pins whenever a folder still references it. Folder-only playlists can be added back to the library. The shared Mac/web interface animates a lifted drag preview, live insertion slots, neighboring cards and the final drop, with edge scrolling, Escape cancellation and reduced-motion support.

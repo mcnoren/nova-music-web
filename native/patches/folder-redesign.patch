@@ -1,0 +1,624 @@
+--- a/NovaBrowser/MusicLibraryOrganization.swift
++++ b/NovaBrowser/MusicLibraryOrganization.swift
+@@ -149,6 +149,13 @@
+             if (a != nil) != (b != nil) { return a != nil }
+             return left.offset < right.offset
+         }.map(\.element)
++    }
++
++    func setFolderItemOrder(_ items: [MusicFolderItem], in id: UUID) {
++        guard let index = musicFolders.firstIndex(where: { $0.id == id }),
++              items.count == folderItems(id).count, Set(items.map(\.id)) == Set(folderItems(id).map(\.id)) else { return }
++        musicFolders[index].itemOrder = items.map(\.id)
++        persistMusicFolders()
+     }
+
+     func moveFolderItem(_ item: MusicFolderItem, to target: MusicFolderItem, in id: UUID) {
+--- a/NovaBrowser/MusicLibraryViews.swift
++++ b/NovaBrowser/MusicLibraryViews.swift
+@@ -338,22 +338,17 @@
+     @State private var selecting = false
+     @State private var selected = Set<String>()
+     @State private var editing = false
+-    @State private var arranging = false
+-    @State private var draggedItem: MusicFolderItem?
+     @State private var replacingItem: MusicFolderItem?
+     @State private var shuffleRequest = 0
+     @State private var preparingShuffle = false
+     @State private var shuffleError: String?
+-    @State private var filter: MusicCollectionFilter = .all
+     @State private var sort: MusicReleaseSort = .recommended
+     @State private var datedAlbums: [YouTubeMusicAlbum] = []
+     @Environment(\.dismiss) private var dismiss
+     @Environment(\.musicReducedMotion) private var reduceMotion
+     private var folder: MusicLibraryFolder? { store.musicFolder(folderID) }
+     private var items: [MusicFolderItem] {
+-        let source = store.folderItems(folderID).filter { item in
+-            switch item { case .album: return filter != .playlists; case .playlist: return filter != .albums }
+-        }
++        let source = store.folderItems(folderID)
+         guard sort != .recommended else { return source }
+         let albums = sort.sorted(source.compactMap { if case .album(let album) = $0 { return datedAlbums.first { $0.id == album.id } ?? album }; return nil })
+         let positions = Dictionary(albums.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+@@ -369,12 +364,18 @@
+     }
+
+     var body: some View {
+-        ScrollView {
+-            LazyVStack(spacing: 0) {
++        MusicReorderableCollection(items: items, gallery: folder?.gallery == true, rowHeight: 80, reorderingEnabled: !selecting, onMove: { from, to in
++            var current = items
++            guard current.indices.contains(from), current.indices.contains(to) else { return }
++            let moved = current.remove(at: from); current.insert(moved, at: to)
++            store.setFolderItemOrder(current, in: folderID)
++            sort = .recommended
++        }) {
++            VStack(spacing: 0) {
+                 HStack(alignment: .center) {
+                     MusicCollectionArtwork(choice: folder?.artwork, covers: store.covers(for: .folder(folderID))).frame(width: 60, height: 60)
+                     VStack(alignment: .leading, spacing: 6) {
+-                        Text(folder?.name ?? "Folder").font(.largeTitle.bold()).lineLimit(2)
++                        Text(folder?.name ?? "Folder").font(.title2.bold()).lineLimit(2)
+                         Text(selecting ? "\(selected.count) selected" : "\(items.count) items").font(.subheadline).foregroundStyle(.secondary)
+                     }
+                     Spacer(minLength: 12)
+@@ -404,12 +405,6 @@
+                     Button { store.setFolderGallery(folder?.gallery != true, in: folderID) } label: {
+                         Image(systemName: folder?.gallery == true ? "list.bullet" : "square.grid.2x2")
+                     }.accessibilityLabel(folder?.gallery == true ? "List view" : "Gallery view")
+-                    Button(arranging ? "Done" : "Edit") { arranging.toggle(); if arranging { selecting = false; filter = .all; sort = .recommended } }
+-                }.padding(.horizontal, 20).padding(.bottom, 16)
+-                HStack {
+-                    Picker("Show", selection: $filter) {
+-                        ForEach(MusicCollectionFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+-                    }.pickerStyle(.segmented)
+                     MusicReleaseSortMenu(sort: $sort)
+                 }.padding(.horizontal, 20).padding(.bottom, 16)
+                 if let shuffleError {
+@@ -422,23 +417,12 @@
+                     ContentUnavailableView("Empty folder", systemImage: "folder", description: Text("Add albums and playlists to start listening."))
+                     Button("Add items") { editing = true }.buttonStyle(.bordered).padding(20)
+                 }
+-                if folder?.gallery == true {
+-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 155))], spacing: 16) {
+-                        ForEach(items) { item in folderGalleryItem(item) }
+-                    }.padding(.horizontal, 20)
+-                } else if arranging {
+-                    ForEach(items) { item in folderRow(item).onDrag { draggedItem = item; return NSItemProvider(object: item.id as NSString) }
+-                        .onDrop(of: [.text], isTargeted: nil) { _ in
+-                            guard let draggedItem else { return false }
+-                            store.moveFolderItem(draggedItem, to: item, in: folderID); self.draggedItem = nil; return true
+-                        }
+-                    }
+-                } else {
+-                    MusicNativeSelectionRows(items: items, selecting: $selecting, selected: $selected, rowHeight: 96, activate: { openedItem = $0 }) { item in folderRow(item) }
+-                        .frame(height: CGFloat(items.count) * 96)
+-                }
+-            }.padding(.bottom, 24)
+-                .animation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.85), value: items.map(\.id))
++            }
++        } row: { item in
++            Group {
++                if folder?.gallery == true { folderGalleryItem(item) }
++                else { folderRow(item) }
++            }
+         }.background(Color(white: 0.055)).foregroundStyle(.white).tint(.white)
+             .navigationTitle("Folder").navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
+             .toolbar {
+@@ -491,19 +475,23 @@
+     private func folderRow(_ item: MusicFolderItem) -> some View {
+         let pinned = store.isFolderItemPinned(item, in: folderID)
+         return HStack(spacing: 0) {
+-            Button { openedItem = item } label: {
++            Button {
++                if selecting { if !selected.insert(item.id).inserted { selected.remove(item.id) } }
++                else { openedItem = item }
++            } label: {
+                 HStack(spacing: 14) {
++                    if selecting { Image(systemName: selected.contains(item.id) ? "checkmark.circle.fill" : "circle").foregroundStyle(.pink) }
+                     itemContent(item)
+                     if pinned { Image(systemName: "pin.fill").font(.system(size: 10, weight: .semibold)).foregroundStyle(.pink).accessibilityHidden(true) }
+-                    if arranging { Image(systemName: "line.3.horizontal").foregroundStyle(.secondary) }
+-                }.padding(.leading, 20).frame(maxWidth: .infinity, minHeight: 96, maxHeight: 96).contentShape(Rectangle())
++
++                }.frame(maxWidth: .infinity, minHeight: 80, maxHeight: 80).contentShape(Rectangle())
+             }.buttonStyle(.plain)
+-            Button { replacingItem = item } label: { Image(systemName: "ellipsis").frame(width: 44, height: 96).contentShape(Rectangle()) }
++            Menu { itemActions(item) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 80).contentShape(Rectangle()) }
+                 .accessibilityLabel("Item options")
+-        }.frame(maxWidth: .infinity).frame(height: 96)
++        }.frame(maxWidth: .infinity).frame(height: 80)
+             .background(.white.opacity(pinned ? 0.065 : 0.025))
+             .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5).padding(.leading, 98).allowsHitTesting(false) }
+-            .gesture(LongPressGesture().onEnded { _ in replacingItem = item }, including: arranging ? .none : .all)
++
+
+             .accessibilityIdentifier("folder.item.\(item.id)")
+             .accessibilityValue(pinned ? "Pinned" : "")
+@@ -511,32 +499,31 @@
+
+     private func folderGalleryItem(_ item: MusicFolderItem) -> some View {
+         VStack(alignment: .leading, spacing: 8) {
+-            Button { openedItem = item } label: {
++            Button {
++                if selecting { if !selected.insert(item.id).inserted { selected.remove(item.id) } }
++                else { openedItem = item }
++            } label: {
+                 VStack(alignment: .leading, spacing: 8) {
+                     switch item {
+                     case .album(let album):
+-                        MusicCollectionArtwork(choice: nil, covers: [album.artwork].compactMap { $0 }).aspectRatio(1, contentMode: .fit)
+-                        Text(album.title).font(.headline).lineLimit(2)
++                        MusicCollectionArtwork(choice: nil, covers: [album.artwork].compactMap { $0 }, symbol: "opticaldisc").aspectRatio(1, contentMode: .fit)
++                        Text(album.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                     case .playlist(let id):
+                         if let playlist = store.playlist(id) {
+-                            MusicCollectionArtwork(choice: playlist.customArtwork, covers: playlist.coverURLs).aspectRatio(1, contentMode: .fit)
+-                            Text(playlist.name).font(.headline).lineLimit(2)
++                            MusicCollectionArtwork(choice: playlist.customArtwork, covers: playlist.coverURLs, symbol: "music.note.list").aspectRatio(1, contentMode: .fit)
++                            Text(playlist.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                         }
+                     }
+                 }
+             }.buttonStyle(.plain)
+             HStack {
+-                if arranging { Image(systemName: "line.3.horizontal").foregroundStyle(.secondary) }
++                if store.isFolderItemPinned(item, in: folderID) { Image(systemName: "pin.fill").font(.caption).foregroundStyle(.pink) }
+                 Spacer()
+-                Button { replacingItem = item } label: { Image(systemName: "ellipsis").frame(width: 44, height: 32) }.accessibilityLabel("Collection options")
+-            }
+-        }.gesture(LongPressGesture().onEnded { _ in replacingItem = item }, including: arranging ? .none : .all)
+-
+-            .onDrag { guard arranging else { return NSItemProvider() }; draggedItem = item; return NSItemProvider(object: item.id as NSString) }
+-            .onDrop(of: [.text], isTargeted: nil) { _ in
+-                guard arranging, let draggedItem else { return false }
+-                store.moveFolderItem(draggedItem, to: item, in: folderID); self.draggedItem = nil; return true
+-            }
++                Menu { itemActions(item) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 32) }.accessibilityLabel("Collection options")
++            }
++        }
++            .accessibilityIdentifier("folder.item.\(item.id)")
++
+     }
+
+     @ViewBuilder private func itemContent(_ item: MusicFolderItem) -> some View {
+@@ -1001,13 +988,11 @@
+     let player: YouTubePlayer
+     @Environment(\.dismiss) private var dismiss
+     @State private var addingSongs = false
+-    @State private var editMode: EditMode
+     @State private var entries: [MusicPlaybackQueueEntry]
+     @State private var shuffled: Bool
+     @State private var repeatMode: YouTubePlayer.RepeatMode
+     init(store: YouTubeStore, player: YouTubePlayer, initiallyEditing: Bool = false) {
+         self.store = store; self.player = player
+-        _editMode = State(initialValue: initiallyEditing ? .active : .inactive)
+         _entries = State(initialValue: player.upcomingQueueEntries)
+         _shuffled = State(initialValue: player.shuffled)
+         _repeatMode = State(initialValue: player.repeatMode)
+@@ -1017,30 +1002,24 @@
+     }
+     var body: some View {
+         NavigationStack {
+-            List {
+-                if let current = store.current {
+-                    Section("Now Playing") { queueRow(current) }
+-                }
+-                Section {
+-                    ForEach(entries) { entry in
+-                        Button { if !editMode.isEditing { player.playQueueEntry(entry.id) } } label: { queueRow(track(entry.videoID)) }.buttonStyle(.plain)
+-                    }.onDelete { player.removeUpcomingQueue(at: $0) }
+-                        .onMove { player.moveUpcomingQueue(from: $0, to: $1) }
++            MusicReorderableCollection(items: entries, rowHeight: 76, onMove: { from, to in
++                player.moveUpcomingQueue(from: IndexSet(integer: from), to: to > from ? to + 1 : to)
++            }) {
++                VStack(alignment: .leading, spacing: 16) {
++                    if let current = store.current { Text("Now Playing").font(.headline); queueRow(current) }
++                    HStack { Text("Playing Next · \(entries.count)").font(.headline); Spacer(); Button("Clear") { store.beginMusicQueueContext(); player.clearUpcomingQueue() }.disabled(entries.isEmpty) }
++                    Button { addingSongs = true } label: { Label("Add Songs to Queue", systemImage: "plus") }
+                     if entries.isEmpty { Text("Your queue is empty.").foregroundStyle(.secondary) }
+-                } header: {
+-                    HStack {
+-                        Text("Playing Next"); Spacer()
+-                        Button("Clear") { store.beginMusicQueueContext(); player.clearUpcomingQueue() }.disabled(entries.isEmpty)
+-                    }
+-                } footer: { Text("\(entries.count) songs remaining") }
+-                Button { addingSongs = true } label: { Label("Add Songs to Queue", systemImage: "plus") }
++                }.padding(20)
++            } row: { entry in
++                HStack(spacing: 8) {
++                    Button { player.playQueueEntry(entry.id) } label: { queueRow(track(entry.videoID)) }.buttonStyle(.plain)
++                    Menu { Button("Remove from queue", systemImage: "minus.circle", role: .destructive) {
++                        if let index = entries.firstIndex(where: { $0.id == entry.id }) { player.removeUpcomingQueue(at: IndexSet(integer: index)) }
++                    } } label: { Image(systemName: "ellipsis").frame(width: 36, height: 44) }
++                }
+             }.navigationTitle("Playing Next").navigationBarTitleDisplayMode(.inline)
+                 .toolbar {
+-                    ToolbarItem(placement: .topBarLeading) {
+-                        Button(editMode.isEditing ? "Finish Editing" : "Edit") {
+-                            withAnimation(.easeInOut(duration: 0.2)) { editMode = editMode.isEditing ? .inactive : .active }
+-                        }.disabled(entries.isEmpty && !editMode.isEditing)
+-                    }
+                     ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                     ToolbarItemGroup(placement: .bottomBar) {
+                         Button { player.toggleShuffle() } label: { Image(systemName: "shuffle").foregroundStyle(shuffled ? Color.pink : Color.primary) }
+@@ -1050,7 +1029,6 @@
+                             .accessibilityLabel("Repeat").accessibilityValue(repeatMode.rawValue)
+                     }
+                 }
+-                .environment(\.editMode, $editMode)
+                 .onReceive(player.$queueEntries.combineLatest(player.$playlistIndex)
+                     .map { Array($0.0.dropFirst($0.1 + 1)) }.removeDuplicates()) { entries = $0 }
+                 .onReceive(player.$shuffled.removeDuplicates()) { shuffled = $0 }
+@@ -1337,27 +1315,23 @@
+     @ObservedObject var store: YouTubeStore
+     let playlistID: UUID
+     @Environment(\.dismiss) private var dismiss
+-    @State private var editMode = EditMode.active
+     private var playlist: YouTubePlaylist? { store.playlist(playlistID) }
+     var body: some View {
+         NavigationStack {
+-            List {
+-                Section {
+-                    ForEach(playlist?.videos ?? []) { song in
+-                        HStack(spacing: 12) {
+-                            VideoArtwork(video: song, cornerRadius: 6, showsProgress: false).frame(width: 48, height: 48)
+-                            VStack(alignment: .leading, spacing: 4) {
+-                                MusicSongTitle(song: song).lineLimit(2)
+-                                Text(song.channel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+-                            }
+-                        }.padding(.vertical, 3)
+-                    }.onMove { store.movePlaylistSongs(playlistID, from: $0, to: $1) }
+-                        .onDelete { offsets in
+-                            let songs = playlist?.videos ?? []
+-                            for index in offsets where songs.indices.contains(index) { store.remove(songs[index], from: playlistID) }
+-                        }
+-                } footer: { Text("Drag the handles to change the song order. Changes are saved automatically.") }
+-            }.environment(\.editMode, $editMode)
++            MusicReorderableCollection(items: playlist?.videos ?? [], rowHeight: 72, onMove: { from, to in
++                store.movePlaylistSongs(playlistID, from: IndexSet(integer: from), to: to > from ? to + 1 : to)
++            }) {
++                Text("Touch and hold a song, then drag to change its position. Changes are saved automatically.").font(.subheadline).foregroundStyle(.secondary).padding(20)
++            } row: { song in
++                HStack(spacing: 12) {
++                    VideoArtwork(video: song, cornerRadius: 6, showsProgress: false).frame(width: 48, height: 48)
++                    VStack(alignment: .leading, spacing: 4) {
++                        MusicSongTitle(song: song).lineLimit(1)
++                        Text(song.channel).font(.caption).foregroundStyle(.secondary).lineLimit(1)
++                    }.frame(maxWidth: .infinity, alignment: .leading)
++                    Menu { Button("Remove song", systemImage: "minus.circle", role: .destructive) { store.remove(song, from: playlistID) } } label: { Image(systemName: "ellipsis").frame(width: 36, height: 44) }
++                }
++            }
+                 .navigationTitle("Edit playlist").navigationBarTitleDisplayMode(.inline)
+                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+         }.preferredColorScheme(.dark).tint(.pink)
+@@ -1451,23 +1425,21 @@
+     private var layout: MusicLayoutConfiguration { store.musicLayout(for: area) }
+     var body: some View {
+         NavigationStack {
+-            List {
+-                Section {
+-                    ForEach(layout.order, id: \.self) { id in
+-                        if let section = area.sections.first(where: { $0.id == id }) {
+-                            Toggle(isOn: Binding(get: { !layout.hidden.contains(id) }, set: { visible in
+-                                var value = layout
+-                                if visible { value.hidden.remove(id) } else { value.hidden.insert(id) }
+-                                store.setMusicLayout(value, for: area)
+-                            })) { Label(section.title, systemImage: section.symbol) }
+-                        }
+-                    }.onMove { source, destination in
+-                        var value = layout; value.order.move(fromOffsets: source, toOffset: destination)
+-                        store.setMusicLayout(value, for: area)
+-                    }
+-                } footer: { Text("Choose the sections you want to see and drag to change their order. Your layout is saved automatically.") }
+-                Button("Restore default layout") { store.setMusicLayout(area.defaultLayout, for: area) }
+-            }.environment(\.editMode, .constant(.active))
++            MusicReorderableCollection(items: layout.order.compactMap { id in area.sections.first { $0.id == id } }, rowHeight: 60, onMove: { from, to in
++                var value = layout; value.order.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
++                store.setMusicLayout(value, for: area)
++            }) {
++                VStack(alignment: .leading, spacing: 12) {
++                    Text("Choose the sections you want to see. Touch and hold a section to move it.").font(.subheadline).foregroundStyle(.secondary)
++                    Button("Restore default layout") { store.setMusicLayout(area.defaultLayout, for: area) }
++                }.padding(20)
++            } row: { section in
++                Toggle(isOn: Binding(get: { !layout.hidden.contains(section.id) }, set: { visible in
++                    var value = layout
++                    if visible { value.hidden.remove(section.id) } else { value.hidden.insert(section.id) }
++                    store.setMusicLayout(value, for: area)
++                })) { Label(section.title, systemImage: section.symbol) }
++            }
+                 .navigationTitle("Customize \(area.title)").navigationBarTitleDisplayMode(.inline)
+                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+         }.preferredColorScheme(.dark).tint(.pink)
+--- a/NovaBrowser/MusicLibrarySelection.swift
++++ b/NovaBrowser/MusicLibrarySelection.swift
+@@ -28,12 +28,18 @@
+                             }
+                         }
+                     }
+-                } else if choice == nil, symbol == "music.note.list", let cover = covers.first {
++                } else if choice == nil, symbol != "folder.fill", let cover = covers.first {
+                     AsyncImage(url: cover) { image in image.resizable().scaledToFill() } placeholder: { placeholder }
+                         .frame(width: geometry.size.width, height: geometry.size.height)
+                 } else { placeholder }
+             }.frame(width: geometry.size.width, height: geometry.size.height).clipped()
+         }.clipShape(RoundedRectangle(cornerRadius: 10))
++            .overlay(alignment: .bottomTrailing) {
++                if symbol == "folder.fill" {
++                    Image(systemName: "folder.fill").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
++                        .padding(5).background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 6)).padding(4)
++                }
++            }
+             .accessibilityLabel(choice?.style == .collage ? "Cover collage" : "Collection artwork")
+     }
+     private var placeholder: some View {
+@@ -101,6 +107,7 @@
+     var scrolling = false
+     var contentRevision: String? = nil
+     var sectionTitle: ((Item) -> String?)? = nil
++    var onMove: ((Int, Int) -> Void)? = nil
+     var activate: (Item) -> Void
+     @ViewBuilder var row: (Item) -> Row
+     func makeCoordinator() -> Coordinator { Coordinator(self) }
+@@ -111,6 +118,8 @@
+         table.isScrollEnabled = scrolling; table.allowsMultipleSelectionDuringEditing = true
+         table.tintColor = .systemPink; table.register(UITableViewCell.self, forCellReuseIdentifier: "MusicSelectionRow")
+         table.dataSource = context.coordinator; table.delegate = context.coordinator
++        table.dragDelegate = context.coordinator; table.dropDelegate = context.coordinator
++        table.dragInteractionEnabled = onMove != nil
+         table.accessibilityIdentifier = "MusicMultiSelectList"
+         return table
+     }
+@@ -122,7 +131,8 @@
+         coordinator.parent = self
+         table.isScrollEnabled = scrolling; table.rowHeight = rowHeight
+         if editChanged { table.setEditing(selecting, animated: !coordinator.interacting) }
+-        if changed { table.reloadData() }
++        table.dragInteractionEnabled = onMove != nil && !selecting
++        if changed && !coordinator.interacting { table.reloadData() }
+         else if editChanged || appearanceChanged {
+             for cell in table.visibleCells { if let path = table.indexPath(for: cell) { coordinator.configure(cell, at: path) } }
+         }
+@@ -140,7 +150,7 @@
+         let headers = context.coordinator.sections.filter { $0.0 != nil }.count
+         return CGSize(width: proposal.width ?? 320, height: scrolling ? proposal.height ?? 500 : CGFloat(items.count) * rowHeight + CGFloat(headers) * 36)
+     }
+-    final class Coordinator: NSObject, UITableViewDataSource, UITableViewDelegate {
++    final class Coordinator: NSObject, UITableViewDataSource, UITableViewDelegate, UITableViewDragDelegate, UITableViewDropDelegate {
+         var parent: MusicNativeSelectionRows
+         var interacting = false
+         init(_ parent: MusicNativeSelectionRows) { self.parent = parent }
+@@ -193,6 +203,50 @@
+             for cell in tableView.visibleCells { if let path = tableView.indexPath(for: cell) { configure(cell, at: path) } }
+         }
+         func tableViewDidEndMultipleSelectionInteraction(_ tableView: UITableView) { interacting = false }
++        weak var scrollHost: UIScrollView?
++        var edgeDisplayLink: CADisplayLink?
++        var dragPoint = CGPoint.zero
++        var draggedID: Item.ID?
++        func tableView(_ tableView: UITableView, itemsForBeginning session: UIDragSession, at indexPath: IndexPath) -> [UIDragItem] {
++            guard parent.onMove != nil, !parent.selecting, let item = item(at: indexPath) else { return [] }
++            interacting = true; draggedID = item.id
++            if let window = tableView.window { dragPoint = session.location(in: window) }
++            let drag = UIDragItem(itemProvider: NSItemProvider(object: String(describing: item.id) as NSString)); drag.localObject = self
++            var ancestor: UIView? = tableView
++            while let view = ancestor {
++                if let scroll = view as? UIScrollView, scroll.isScrollEnabled { scrollHost = scroll; break }
++                ancestor = view.superview
++            }
++            edgeDisplayLink?.invalidate()
++            let link = CADisplayLink(target: self, selector: #selector(scrollAtEdge)); link.add(to: .main, forMode: .common); edgeDisplayLink = link
++            return [drag]
++        }
++        @objc func scrollAtEdge() {
++            guard let scroll = scrollHost, let window = scroll.window else { return }
++            let point = scroll.convert(dragPoint, from: window), edge: CGFloat = 64
++            let top = scroll.bounds.minY + scroll.adjustedContentInset.top, bottom = scroll.bounds.maxY - scroll.adjustedContentInset.bottom
++            let speed: CGFloat = point.y < top + edge ? -min(1, (top + edge - point.y) / edge) : point.y > bottom - edge ? min(1, (point.y - bottom + edge) / edge) : 0
++            let low = -scroll.adjustedContentInset.top, high = max(low, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
++            let delta = speed * abs(speed) * 650 * CGFloat(edgeDisplayLink?.duration ?? 1 / 60)
++            scroll.contentOffset.y = min(high, max(low, scroll.contentOffset.y + delta))
++        }
++        func tableView(_ tableView: UITableView, dragSessionDidEnd session: UIDragSession) {
++            edgeDisplayLink?.invalidate(); edgeDisplayLink = nil; draggedID = nil; interacting = false
++        }
++        func tableView(_ tableView: UITableView, canHandle session: UIDropSession) -> Bool { session.items.first?.localObject as? Coordinator === self }
++        func tableView(_ tableView: UITableView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destinationIndexPath: IndexPath?) -> UITableViewDropProposal {
++            if let window = tableView.window { dragPoint = session.location(in: window) }
++            return .init(operation: .move, intent: .insertAtDestinationIndexPath)
++        }
++        func tableView(_ tableView: UITableView, performDropWith coordinator: UITableViewDropCoordinator) {
++            guard let id = draggedID, let from = parent.items.firstIndex(where: { $0.id == id }),
++                  let path = coordinator.destinationIndexPath, let target = item(at: path), let to = parent.items.firstIndex(where: { $0.id == target.id }),
++                  let drop = coordinator.items.first, let source = drop.sourceIndexPath else { return }
++            parent.onMove?(from, to)
++            tableView.moveRow(at: source, to: path)
++            coordinator.drop(drop.dragItem, toRowAt: path)
++        }
++
+     }
+ }
+
+@@ -321,6 +375,7 @@
+     var foreground: Color = .white
+     var albumArtist: String? = nil
+     var collectionContext: String? = nil
++    var onMove: ((Int, Int) -> Void)? = nil
+     var onRemove: (([YouTubeVideo]) -> Void)? = nil
+     var onPlay: ((YouTubeVideo) -> Void)? = nil
+     @State private var selecting = false
+@@ -345,7 +400,7 @@
+                 }
+                 Button(selecting ? "Done" : "Select") { selecting.toggle(); if !selecting { selected = [] } }.disabled(songs.isEmpty)
+             }.font(.subheadline).padding(.horizontal, 16).frame(minHeight: 30)
+-            MusicNativeSelectionRows(items: songs, selecting: $selecting, selected: $selected, rowHeight: rowHeight, headerColor: UIColor(foreground), contentRevision: collectionContext.flatMap { store.collectionPositions[$0]?.songID }, sectionTitle: discHeaders ? { "Disc \($0.discNumber ?? 1)" } : nil, activate: play) { song in
++            MusicNativeSelectionRows(items: songs, selecting: $selecting, selected: $selected, rowHeight: rowHeight, headerColor: UIColor(foreground), contentRevision: collectionContext.flatMap { store.collectionPositions[$0]?.songID }, sectionTitle: discHeaders ? { "Disc \($0.discNumber ?? 1)" } : nil, onMove: onMove, activate: play) { song in
+                 HStack(spacing: 12) {
+                     if numbering {
+                         MusicTrackPlayingIndicator(player: store.player, songID: song.id, number: song.trackNumber ?? (songs.firstIndex(where: { $0.id == song.id }) ?? 0) + 1, numberColor: foreground.opacity(0.65)).frame(width: 22)
+@@ -619,3 +674,114 @@
+         }
+     }
+ }
++
++/// One native drag surface for list rows and gallery cards. UIKit owns the lift,
++/// insertion gap, drop animation and edge scrolling on both iPhone and iPad.
++struct MusicReorderableCollection<Item: Identifiable, Header: View, Row: View>: UIViewRepresentable where Item.ID: Hashable {
++    var items: [Item]
++    var gallery = false
++    var rowHeight: CGFloat = 80
++    var reorderingEnabled = true
++    var onMove: (Int, Int) -> Void
++    @ViewBuilder var header: () -> Header
++    @ViewBuilder var row: (Item) -> Row
++
++    func makeCoordinator() -> Coordinator { Coordinator(self) }
++    func makeUIView(context: Context) -> UICollectionView {
++        let coordinator = context.coordinator
++        let layout = UICollectionViewCompositionalLayout { section, environment in
++            let gallery = coordinator.parent.gallery, rowHeight = coordinator.parent.rowHeight
++            let width = environment.container.effectiveContentSize.width
++            let count = section == 0 || !gallery ? 1 : max(2, Int(width / 190))
++            let height: NSCollectionLayoutDimension = section == 0 ? .estimated(200) : .absolute(gallery ? (width - 40 - CGFloat(count - 1) * 16) / CGFloat(count) + 72 : rowHeight)
++            let item = NSCollectionLayoutItem(layoutSize: .init(widthDimension: .fractionalWidth(1 / CGFloat(count)), heightDimension: section == 0 ? .estimated(200) : .fractionalHeight(1)))
++            let group = NSCollectionLayoutGroup.horizontal(layoutSize: .init(widthDimension: .fractionalWidth(1), heightDimension: height), repeatingSubitem: item, count: count)
++            group.interItemSpacing = .fixed(gallery && section != 0 ? 16 : 0)
++            let result = NSCollectionLayoutSection(group: group)
++            result.interGroupSpacing = gallery && section != 0 ? 20 : 2
++            result.contentInsets = .init(top: 0, leading: section == 0 ? 0 : 20, bottom: section == 0 ? 12 : 32, trailing: section == 0 ? 0 : 20)
++            return result
++        }
++        let view = UICollectionView(frame: .zero, collectionViewLayout: layout)
++        view.backgroundColor = UIColor(white: 0.055, alpha: 1)
++        view.alwaysBounceVertical = true; view.dragInteractionEnabled = reorderingEnabled
++        view.reorderingCadence = .immediate
++        view.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "music")
++        context.coordinator.configure(view)
++        return view
++    }
++    func updateUIView(_ view: UICollectionView, context: Context) {
++        let changedLayout = context.coordinator.parent.gallery != gallery
++        context.coordinator.parent = self
++        view.dragInteractionEnabled = reorderingEnabled
++        if changedLayout { view.collectionViewLayout.invalidateLayout() }
++        context.coordinator.update()
++    }
++
++    enum Key: Hashable { case header, item(Item.ID) }
++    final class Coordinator: NSObject, UICollectionViewDragDelegate, UICollectionViewDropDelegate {
++        var parent: MusicReorderableCollection
++        weak var view: UICollectionView?
++        var source: UICollectionViewDiffableDataSource<Int, Key>!
++        var dragging: Item.ID?
++        init(_ parent: MusicReorderableCollection) { self.parent = parent }
++        func configure(_ view: UICollectionView) {
++            self.view = view; view.dragDelegate = self; view.dropDelegate = self
++            source = UICollectionViewDiffableDataSource<Int, Key>(collectionView: view) { [weak self] view, indexPath, key in
++                let cell = view.dequeueReusableCell(withReuseIdentifier: "music", for: indexPath)
++                guard let self else { return cell }
++                switch key {
++                case .header: cell.contentConfiguration = UIHostingConfiguration { self.parent.header() }.margins(.all, 0)
++                case .item(let id):
++                    if let item = self.parent.items.first(where: { $0.id == id }) {
++                        cell.contentConfiguration = UIHostingConfiguration { self.parent.row(item) }.margins(.all, 0)
++                    }
++                }
++                return cell
++            }
++            update()
++        }
++        func update() {
++            guard dragging == nil else { return }
++            var snapshot = NSDiffableDataSourceSnapshot<Int, Key>()
++            snapshot.appendSections([0, 1]); snapshot.appendItems([.header], toSection: 0)
++            snapshot.appendItems(parent.items.map { .item($0.id) }, toSection: 1)
++            let existing = Set(source.snapshot().itemIdentifiers)
++            snapshot.reconfigureItems(snapshot.itemIdentifiers.filter { existing.contains($0) })
++            source.apply(snapshot, animatingDifferences: !UIAccessibility.isReduceMotionEnabled)
++        }
++        func collectionView(_ collectionView: UICollectionView, itemsForBeginning session: UIDragSession, at indexPath: IndexPath) -> [UIDragItem] {
++            guard parent.reorderingEnabled, case .item(let id) = source.itemIdentifier(for: indexPath) else { return [] }
++            dragging = id
++            let item = UIDragItem(itemProvider: NSItemProvider(object: String(describing: id) as NSString))
++            item.localObject = self
++            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
++            return [item]
++        }
++        func collectionView(_ collectionView: UICollectionView, dragSessionIsRestrictedToDraggingApplication session: UIDragSession) -> Bool { true }
++        func collectionView(_ collectionView: UICollectionView, dragSessionDidEnd session: UIDragSession) { dragging = nil; update() }
++        func collectionView(_ collectionView: UICollectionView, canHandle session: UIDropSession) -> Bool {
++            session.localDragSession != nil && session.items.first?.localObject as? Coordinator === self
++        }
++        func collectionView(_ collectionView: UICollectionView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destinationIndexPath: IndexPath?) -> UICollectionViewDropProposal {
++            guard dragging != nil, destinationIndexPath?.section != 0 else { return .init(operation: .cancel) }
++            return .init(operation: .move, intent: .insertAtDestinationIndexPath)
++        }
++        func collectionView(_ collectionView: UICollectionView, performDropWith coordinator: UICollectionViewDropCoordinator) {
++            guard let id = dragging, let from = parent.items.firstIndex(where: { $0.id == id }), let drop = coordinator.items.first else { return }
++            let to = min(max(0, coordinator.destinationIndexPath?.item ?? parent.items.count - 1), parent.items.count - 1)
++            let destination = IndexPath(item: to, section: 1)
++            var snapshot = source.snapshot()
++            let keys = parent.items.map { Key.item($0.id) }
++            snapshot.deleteItems([.item(id)])
++            if from != to {
++                if to > from { snapshot.insertItems([.item(id)], afterItem: keys[to]) }
++                else { snapshot.insertItems([.item(id)], beforeItem: keys[to]) }
++            } else if to < keys.count - 1 { snapshot.insertItems([.item(id)], beforeItem: keys[to + 1]) }
++            else { snapshot.appendItems([.item(id)], toSection: 1) }
++            source.apply(snapshot, animatingDifferences: !UIAccessibility.isReduceMotionEnabled)
++            coordinator.drop(drop.dragItem, toItemAt: destination)
++            if from != to { parent.onMove(from, to); UISelectionFeedbackGenerator().selectionChanged() }
++        }
++    }
++}
+--- a/NovaBrowser/YouTubeView.swift
++++ b/NovaBrowser/YouTubeView.swift
+@@ -2259,7 +2259,9 @@
+                         NavigationLink { YouTubeMusicArtistView(store: store, artist: artist) } label: { Label(artist.name, systemImage: "person.crop.circle") }
+                     }
+                     if music || store.musicOnly {
+-                        MusicSelectableSongs(store: store, songs: playlist.videos, numbering: true, collectionContext: "playlist:" + playlistID.uuidString.lowercased(), onRemove: playlist.canEditSongs ? { songs in
++                        MusicSelectableSongs(store: store, songs: playlist.videos, numbering: true, collectionContext: "playlist:" + playlistID.uuidString.lowercased(), onMove: playlist.canEditSongs ? { from, to in
++                            store.movePlaylistSongs(playlistID, from: IndexSet(integer: from), to: to > from ? to + 1 : to)
++                        } : nil, onRemove: playlist.canEditSongs ? { songs in
+                             for song in songs { store.remove(song, from: playlistID) }
+                         } : nil, onPlay: { song in
+                             if let index = playlist.videos.firstIndex(where: { $0.id == song.id }) { store.play(playlist, startAt: index, music: true) }
+@@ -3812,7 +3814,7 @@
+                 }
+             }.searchable(text: $search, prompt: "Find or add a genre")
+                 .navigationTitle("Your genres").navigationBarTitleDisplayMode(.inline)
+-                .toolbar { ToolbarItem(placement: .topBarLeading) { EditButton() }; ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
++                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+         }
+     }
+ }
+--- a/Shared/NovaMusicCore/MusicCatalog.swift
++++ b/Shared/NovaMusicCore/MusicCatalog.swift
+@@ -1019,7 +1019,15 @@
+         if video.musicVideoType == "MUSIC_VIDEO_TYPE_ATV" { return video }
+         let root = (try? await musicRequest(endpoint: "next", body: ["videoId": video.id, "isAudioOnly": true, "enablePersistentPlaylistPanel": true], session: session)) ?? [:]
+         try Task.checkCancellation()
+-        if let counterpart = parseMusicAudioCounterpart(root, requestedID: video.id) { return counterpart }
++        let counterpart = parseMusicAudioCounterpart(root, requestedID: video.id)
++        if let counterpart, video.albumTitle?.isEmpty != false || isSameMusicRecording(counterpart, as: video) { return counterpart }
++        // Keep the selected album edition before considering a single or compilation.
++        if let albumID = video.albumID, albumID.hasPrefix("MPRE"), video.albumTitle != nil,
++           let tracks = try? await albumTracks(albumID, session: session),
++           let exact = tracks.first(where: { source in
++               var track = source; track.albumTitle = video.albumTitle
++               return isSameMusicRecording(track, as: video)
++           }) { var track = exact; track.albumTitle = video.albumTitle; return track }
+         var type = video.musicVideoType
+         walk(root) { node in
+             if let item = node["playlistPanelVideoRenderer"] as? [String: Any], item["videoId"] as? String == video.id {
+@@ -1050,7 +1058,7 @@
+         // The official single can contain the same studio song when an album points
+         // to its music video. Explicit live/remix/acoustic albums cannot use this fallback.
+         try Task.checkCancellation()
+-        return catalog.songs.first { isSingleAudioVersion($0, of: video) }
++        return catalog.songs.first { isSingleAudioVersion($0, of: video) } ?? counterpart.flatMap { isSingleAudioVersion($0, of: video) ? $0 : nil }
+     }
+
+     static func linkedAlbum(_ root: Any, for video: YouTubeVideo) -> YouTubeMusicAlbum? {

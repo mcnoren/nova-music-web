@@ -1,3 +1,4 @@
+import {recordingKey} from './search-ranking.js?v=f167518b4d62';
 const normalize=value=>String(value||'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 export const cleanLyricTitle=value=>String(value||'').replace(/\s*[\[(](?:official (?:audio|video|music video)|lyrics?|audio|music video|feat\.?|ft\.?).*?[\])]/gi,'').trim();
 export const cleanLyricArtist=value=>String(value||'').split(/\s[•·]\s|,|\s&\s|\sfeat\.?\s|\sft\.?\s/i)[0].replace(/\s*- Topic$/i,'').trim();
@@ -50,7 +51,14 @@ export function playbackSample(song,player,audio,readyId=song?.id){
  return {position:confirmed?finite(player?.getCurrentTime?.()):0,duration:confirmed?finite(player.getDuration()):finite(song.duration),confirmed};
 }
 export async function preferredAudio(song,request){
- if(song.source!=='youtube'||song.musicVideoType!=='MUSIC_VIDEO_TYPE_OMV')return song;
- const result=await request({query:cleanLyricTitle(song.title)+' '+cleanLyricArtist(song.artist),kind:'Songs',providerOrder:true});
- return result.songs.find(candidate=>candidate.musicVideoType==='MUSIC_VIDEO_TYPE_ATV'&&(!candidate.artistId||!song.artistId||candidate.artistId===song.artistId)&&lyricIdentity({trackName:candidate.title,artistName:candidate.artist},song))||song;
+ if(song.source!=='youtube'||song.musicVideoType==='MUSIC_VIDEO_TYPE_ATV')return song;
+ const result=await request({query:[cleanLyricTitle(song.title),cleanLyricArtist(song.artist),song.album].filter(Boolean).join(' '),kind:'Songs',providerOrder:true});
+ const candidates=(result.songs||[]).filter(candidate=>candidate.musicVideoType==='MUSIC_VIDEO_TYPE_ATV'&&(!candidate.artistId||!song.artistId||candidate.artistId===song.artistId)&&recordingKey(candidate)===recordingKey(song));
+ // Honor the selected album/edition first. A verified studio single is a fallback,
+ // but a live/remix/alternate recording is never substituted for the requested one.
+ const album=normalize(song.album);
+ const exact=candidates.find(candidate=>album&&normalize(candidate.album)===album);
+ if(exact)return exact;
+ if(/\b(live|remix|remaster(?:ed)?|acoustic)\b/i.test(song.album||''))return song;
+ return candidates.find(candidate=>!album||normalize(candidate.album)===normalize(cleanLyricTitle(song.title)))||song;
 }

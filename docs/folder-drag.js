@@ -9,16 +9,15 @@ export function dragDestination(current,candidate,point,rects,gallery=false) {
  return (candidate>current?position>=midpoint:position<=midpoint)?candidate:current;
 }
 
-export function startFolderDrag(event,{onStart,onDrop,onEnd}) {
- const row=event.target.closest('[data-folder-index]'),container=row?.parentElement;
+export function startFolderDrag(event,{row=event.target.closest('[data-reorder-index]'),container=row?.parentElement,onStart,onDrop,onEnd}) {
  if(!row||!container||event.isPrimary===false||document.body.classList.contains('folder-drag-active'))return;
  event.preventDefault();
  const pointer=event.pointerId,handle=container;
- const original=[...container.children],from=Number(row.dataset.folderIndex),bounds=row.getBoundingClientRect();
- const scroller=container.closest('.workspace'),gallery=container.classList.contains('folder-gallery');
+ const original=[...container.children],from=Number(row.dataset.reorderIndex),bounds=row.getBoundingClientRect();
+ const scroller=container.closest('.scroll-list,#panel-body,.workspace'),gallery=container.classList.contains('folder-gallery');
  const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
  const preview=row.cloneNode(true),offset={x:event.clientX-bounds.left,y:event.clientY-bounds.top};
- preview.removeAttribute('data-folder-index');preview.querySelectorAll('[id]').forEach(el=>el.removeAttribute('id'));
+ preview.removeAttribute('data-folder-index');preview.removeAttribute('data-reorder-index');preview.querySelectorAll('[id]').forEach(el=>el.removeAttribute('id'));
  preview.setAttribute('aria-hidden','true');preview.classList.add('folder-drag-preview');
  if(gallery)preview.classList.add('folder-drag-gallery');
  Object.assign(preview.style,{width:bounds.width+'px',height:bounds.height+'px',left:'0',top:'0'});
@@ -55,18 +54,20 @@ export function startFolderDrag(event,{onStart,onDrop,onEnd}) {
    scroller.scrollTop+=speed*Math.abs(speed)*delta*.8;
   }
   place();
-  const target=document.elementFromPoint(point.x,point.y)?.closest('[data-folder-index]');
+  const target=document.elementFromPoint(point.x,point.y)?.closest('[data-reorder-index]');
   if(target?.parentElement===container)rearrange(target);
   frame=requestAnimationFrame(tick);
  }
+ function preventScroll(e){e.preventDefault();}
  function move(e){if(e.pointerId!==pointer||ended)return;e.preventDefault();point={x:e.clientX,y:e.clientY};}
  async function finish(cancel=false){
   if(ended)return;ended=true;cancelAnimationFrame(frame);
+  document.removeEventListener('touchmove',preventScroll);
   document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',up);document.removeEventListener('pointercancel',abort);
   document.removeEventListener('keydown',key);window.removeEventListener('blur',abort);handle.removeEventListener('lostpointercapture',lost);
   if(handle.hasPointerCapture(pointer))handle.releasePointerCapture(pointer);
   if(cancel&&container.isConnected)original.forEach(el=>container.append(el));
-  const slot=[...container.children].indexOf(row),to=Number(original[slot]?.dataset.folderIndex),target=row.getBoundingClientRect();
+  const slot=[...container.children].indexOf(row),to=Number(original[slot]?.dataset.reorderIndex),target=row.getBoundingClientRect();
   const scale=getComputedStyle(preview).scale;lift?.cancel();preview.style.scale=scale;
   if(!reduced&&container.isConnected){
    const animation=preview.animate([{transform:preview.style.transform,scale},{transform:`translate3d(${target.left}px,${target.top}px,0)`,scale:'1',boxShadow:'0 0 0 0 transparent'}],{duration:210,easing:'cubic-bezier(.2,.8,.2,1)',fill:'forwards'});
@@ -80,6 +81,7 @@ export function startFolderDrag(event,{onStart,onDrop,onEnd}) {
  function abort(e){if(e.pointerId===undefined||e.pointerId===pointer)finish(true);}
  function lost(e){if(e.pointerId===pointer)finish(true);}
  function key(e){if(e.key==='Escape'){e.preventDefault();finish(true);}}
+ document.addEventListener('touchmove',preventScroll,{passive:false});
  document.addEventListener('pointermove',move,{passive:false});document.addEventListener('pointerup',up);document.addEventListener('pointercancel',abort);
  document.addEventListener('keydown',key);window.addEventListener('blur',abort);handle.addEventListener('lostpointercapture',lost);
  frame=requestAnimationFrame(tick);

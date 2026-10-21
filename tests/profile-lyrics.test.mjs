@@ -64,3 +64,23 @@ test('music video playback resolves only the same artist/title official audio an
  assert.equal((await preferredAudio({...video,title:'drop dead (Live)'},request)).id,video.id);
  assert.equal(lyricData({...record,duration:251},{...song,duration:251,source:'youtube',musicVideoType:'MUSIC_VIDEO_TYPE_OMV'}).lines.length,0);
 });
+
+test('unknown music types resolve to the official selected album before video or single editions',async()=>{
+ const selected={id:'video123456',title:'Song',artist:'Artist',album:'Original Album',source:'youtube'};
+ const official={...selected,id:'audio123456',artist:'Artist - Topic',musicVideoType:'MUSIC_VIDEO_TYPE_ATV'};
+ const single={...official,id:'single12345',album:'Song'};
+ const live={...official,id:'live1234567',title:'Song (Live)'};
+ const request=async()=>({songs:[single,live,official]});
+ assert.equal((await preferredAudio(selected,request)).id,official.id);
+ assert.equal((await preferredAudio({...selected,title:'Song (Remix)'},request)).id,selected.id);
+ assert.equal((await preferredAudio(official,()=>{throw Error('Already official')})).id,official.id);
+});
+test('audio selection does not replace an album recording with a different compilation',async()=>{
+ const song={id:'original123',title:'Song',artist:'Artist',album:'Original Album',source:'youtube'};
+ assert.equal((await preferredAudio(song,async()=>({songs:[{...song,id:'other123456',album:'Greatest Hits',musicVideoType:'MUSIC_VIDEO_TYPE_ATV'}]}))).id,song.id);
+});
+test('an explicitly remastered album is not replaced by a studio single',async()=>{
+ const song={id:'original123',title:'Song',artist:'Artist',album:'Album (Remastered)',source:'youtube'};
+ const single={...song,id:'single12345',album:'Song',musicVideoType:'MUSIC_VIDEO_TYPE_ATV'};
+ assert.equal((await preferredAudio(song,async()=>({songs:[single]}))).id,song.id);
+});

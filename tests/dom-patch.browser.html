@@ -1,0 +1,15 @@
+<!doctype html><html><head><title>Nova DOM preservation checks</title></head><body><h1>DOM preservation checks</h1><div id="fixture"></div><pre id="results">Running…</pre><script type="module">
+import {patchDOM} from '../docs/dom-patch.js';
+const root=document.querySelector('#fixture'),results=[];
+function check(value,message){if(!value)throw Error(message);results.push('PASS '+message);}
+try{
+ patchDOM(root,'<section data-key="album"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="><h2>Original</h2></section><section data-key="playlist"><input value="saved"></section>');
+ const album=root.firstChild,image=album.firstChild,playlist=root.lastChild,input=playlist.firstChild;
+ input.focus();input.value='Typing';
+ patchDOM(root,'<section data-key="playlist"><input value="saved"></section><section data-key="album"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="><h2>Updated</h2></section>');
+ check(root.lastChild===album,'reordering keeps the same album node');check(album.firstChild===image,'reordering keeps the loaded image');
+ check(root.firstChild===playlist,'playlist node survives');check(document.activeElement===input&&input.value==='Typing','typing and focus survive refresh');check(album.lastChild.textContent==='Updated','changed text updates in place');
+ patchDOM(root,'<section data-key="album"><h2>Final</h2></section>');check(root.children.length===1&&root.firstChild===album,'removals keep surviving keyed nodes');
+ document.querySelector('#results').textContent=results.join('\n');
+}catch(error){document.querySelector('#results').textContent=results.join('\n')+'\nFAIL '+error.message;}
+</script></body></html>

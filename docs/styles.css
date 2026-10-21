@@ -174,3 +174,33 @@ button.review-row:hover,button.song-search-row:hover{background:#ffffff0e}.revie
 .folder-drag-gallery .folder-item-actions{margin-left:auto}
 .folder-drag-gallery .folder-art{width:100%;height:auto;aspect-ratio:1;object-fit:cover}
 @media(prefers-reduced-motion:reduce){.folder-drag-preview{transition:none}}
+
+/* Library groups remain visually distinct even when custom folder photos are used. */
+.library-section{padding:14px 0 12px;border-bottom:1px solid #ffffff12}
+.library-section:last-child{border-bottom:0}
+.library-section h3{margin:0 12px 8px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.library-entry-label{flex:1;min-width:0}
+.item-pin{display:inline-flex;flex:0 0 auto;color:#63d895}
+.item-pin svg{width:13px;height:13px}
+.library-show-more{display:block;margin:6px 12px 0;padding:6px 0;background:none;border:0;color:var(--muted);font-size:12px;text-align:left}
+.library-show-more:hover{color:var(--text)}
+.folder-cover-badge{position:relative;display:inline-block;flex-shrink:0;overflow:visible!important;isolation:isolate}
+.folder-cover-badge .folder-cover-image{width:100%;height:100%;border-radius:inherit;object-fit:cover;overflow:hidden}
+.folder-badge{position:absolute;right:3px;bottom:3px;display:grid;place-items:center;width:22px;height:19px;border-radius:5px;background:#101611ec;color:#fff;box-shadow:0 1px 4px #0005}
+.folder-badge svg{width:14px;height:14px}
+.folder-artwork-button .folder-cover-badge{display:block}
+.folder-heading-art .folder-badge{width:26px;height:23px;right:5px;bottom:5px}
+.folder-item .song-info strong,.folder-gallery .song-info strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;-webkit-line-clamp:unset}
+.folder-item .song-info small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.folder-gallery .song-info{flex:1 1 100%;width:0}
+.folder-gallery .folder-item-actions{position:absolute;right:4px;top:4px;background:#111a;border-radius:50%}
+.folder-gallery .item-pin{position:absolute;left:18px;top:18px;background:#111c;border-radius:50%;padding:6px}
+.reorderable{touch-action:pan-y;cursor:grab;-webkit-touch-callout:none}
+.folder-drag-active{overscroll-behavior:none}
+.folder-drag-preview{display:flex;align-items:center;gap:12px;padding:12px;border-radius:14px;color:var(--text)}
+.folder-drag-preview .song-info{min-width:0;flex:1}
+.folder-drag-preview .song-info strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.folder-drag-preview.folder-drag-gallery{align-items:flex-start;flex-wrap:wrap}
+.reorderable img,.reorderable a{-webkit-user-drag:none}
+.folder-drag-gallery .folder-item-actions{position:absolute;right:4px;top:4px;background:#111a;border-radius:50%}
+.folder-drag-gallery .item-pin{position:absolute;left:18px;top:18px;background:#111c;border-radius:50%;padding:6px}
