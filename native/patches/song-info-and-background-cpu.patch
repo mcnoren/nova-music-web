@@ -1,0 +1,156 @@
+--- a/NovaBrowser/YouTubePlayer.swift
++++ b/NovaBrowser/YouTubePlayer.swift
+@@ -603,7 +603,11 @@
+                 // A callback queued by the previous item can arrive during a
+                 // replacement seek. Never overwrite the position being restored.
+                 guard self.ready, self.pendingSeek == nil, self.preparedNext?.item !== self.nativePlayer.currentItem else { return }
+-                self.currentTime = Self.finite(self.nativePlayer.currentTime().seconds)
++                let position = Self.finite(self.nativePlayer.currentTime().seconds)
++                // Hidden screens do not need 20 UI invalidations per second.
++                // AVFoundation's audio clock and queue continue independently.
++                if self.backgroundPlaybackRequested && abs(position - self.currentTime) < 1 { return }
++                if self.currentTime != position { self.currentTime = position }
+                 if let item = self.nativePlayer.currentItem { self.updateTimeline(item) }
+                 self.updatePresentationSize()
+                 self.synchronizeHDPicture()
+@@ -1249,8 +1253,10 @@
+                 let advancing = self.ready && previousPosition.map { position - $0 > 0.01 } == true && self.nativePlayer.timeControlStatus == .playing && self.pendingSeek == nil && !self.restoringNativeClock
+                 if self.audioInterrupted || advancing || (self.hasStartedPlayback && self.pendingSeek != nil) { movedAt = .now }
+                 if advancing && !self.audioInterrupted {
+-                    self.hasStartedPlayback = true; self.siriPlaybackPending = false
+-                    self.musicStartupPhase = .playing; self.loading = false
++                    if !self.hasStartedPlayback { self.hasStartedPlayback = true }
++                    self.siriPlaybackPending = false
++                    if self.musicStartupPhase != .playing { self.musicStartupPhase = .playing }
++                    if self.loading { self.loading = false }
+                     self.endNativeBackgroundLoad()
+                 }
+                 previousPosition = position
+--- a/NovaBrowser/MusicMetadata.swift
++++ b/NovaBrowser/MusicMetadata.swift
+@@ -27,6 +27,7 @@
+     @State private var description: MusicDescription?
+     @State private var catalogSong: YouTubeVideo?
+     @State private var loading = true
++    @State private var lookupAttempt = 0
+     private var track: YouTubeVideo { catalogSong ?? song }
+     var body: some View {
+         NavigationStack {
+@@ -34,13 +35,16 @@
+                 VStack(alignment: .leading, spacing: 22) {
+                     MusicSongTitle(song: track).font(.title.bold())
+                     Text(song.channel).font(.title3).foregroundStyle(.secondary)
++                    Text("About this song").font(.headline)
+                     if let description {
+                         Text(description.text).lineSpacing(5).textSelection(.enabled)
+                         Link("Source: \(description.sourceName)", destination: description.source).font(.footnote)
+                     } else if loading { ProgressView("Finding song information…") }
+                     else {
+                         Text("\(song.title) is a recording by \(song.channel)\(song.albumTitle.map { " from \($0)" } ?? "").").lineSpacing(5)
+-                        Text("A detailed description isn’t available for this recording yet.").font(.footnote).foregroundStyle(.secondary)
++                        Text("No verified song background is available right now.").font(.footnote).foregroundStyle(.secondary)
++                        Button("Try again") { lookupAttempt += 1 }
++                        Link("Search for song background", destination: URL(string: "https://www.google.com/search?q=" + (song.title + " " + song.channel + " song background").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)!)
+                     }
+                     if let album = song.albumTitle { LabeledContent("Album", value: album) }
+                     if let duration = song.durationLabel { LabeledContent("Length", value: duration) }
+@@ -54,17 +58,17 @@
+                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+         }.preferredColorScheme(.dark).foregroundStyle(Color.white).tint(.pink)
+             .presentationBackground(Color(white: 0.06)).presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+-            .task(id: song.id) {
++            .task(id: song.id + "|" + String(lookupAttempt)) {
+                 if let previewDescription { description = previewDescription; loading = false; return }
+                 loading = true
+-                async let about = MusicDescriptions.shared.description(title: song.title, artist: MusicLyricsSource.cleanArtist(song.channel), subject: .song)
+-                if let album = song.albumTitle {
+-                    let metadata = await MusicCatalogMetadata.shared.tracks(for: .init(id: "", title: album, artist: MusicLyricsSource.cleanArtist(song.channel), artwork: nil))
+-                    if !Task.isCancelled { catalogSong = MusicCatalogMetadata.enrich([song], using: metadata).first }
+-                }
+-                let result = await about
++                let result = await MusicDescriptions.shared.songBackground(title: song.title, artist: MusicLyricsSource.cleanArtist(song.channel), refresh: lookupAttempt > 0)
+                 guard !Task.isCancelled else { return }
+                 description = result; loading = false
++            }
++            .task(id: song.id) {
++                guard previewDescription == nil, let album = song.albumTitle else { return }
++                let metadata = await MusicCatalogMetadata.shared.tracks(for: .init(id: "", title: album, artist: MusicLyricsSource.cleanArtist(song.channel), artwork: nil))
++                if !Task.isCancelled { catalogSong = MusicCatalogMetadata.enrich([song], using: metadata).first }
+             }
+     }
+ }
+--- a/Shared/NovaMusicCore/MusicMetadataCore.swift
++++ b/Shared/NovaMusicCore/MusicMetadataCore.swift
+@@ -311,13 +311,71 @@
+         } catch { return nil }
+     }
+
++    /// Fetch article prose beyond the introduction, after verifying both title
++    /// and performer. Never replace an unknown song with an artist biography.
++    func songBackground(title: String, artist: String, refresh: Bool = false, session: URLSession = .shared) async -> MusicDescription? {
++        let key = "song-background|\(title)|\(artist)"
++        if refresh { cache.removeValue(forKey: key); cache.removeValue(forKey: "song|\(title)|\(artist)") }
++        if let (date, value) = cache[key], Date().timeIntervalSince(date) < 3600 { return value }
++        var matched = await description(title: title, artist: artist, subject: .song, session: session)
++        func request(_ fields: [String: String]) async throws -> Data {
++            var url = URLComponents(string: "https://en.wikipedia.org/w/api.php")!
++            var query = fields
++            query.merge(["action": "query", "format": "json", "formatversion": "2", "prop": "extracts|pageprops|info", "inprop": "url", "explaintext": "1", "redirects": "1"], uniquingKeysWith: { _, last in last })
++            url.queryItems = query.sorted { $0.key < $1.key }.map { .init(name: $0.key, value: $0.value) }
++            var request = URLRequest(url: url.url!, timeoutInterval: 12)
++            request.setValue("NovaMusic/1.0 (song backgrounds; Wikipedia attribution)", forHTTPHeaderField: "User-Agent")
++            let (data, response) = try await session.data(for: request)
++            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
++            try Task.checkCancellation()
++            return data
++        }
++        do {
++            if matched == nil {
++                let data = try await request(["generator": "search", "gsrsearch": "\(title) \(artist) song", "gsrlimit": "5", "exintro": "1"])
++                matched = Self.parse(data, title: title, artist: artist, subject: .song)
++            }
++            guard let intro = matched else { cache[key] = (Date(), nil); return nil }
++            let page = intro.source.lastPathComponent.replacingOccurrences(of: "_", with: " ")
++            let data = try await request(["titles": page, "exsectionformat": "wiki"])
++            if let full = Self.parse(data, title: title, artist: artist, subject: .song) {
++                let text = Self.songBackgroundText(full.text)
++                let result = MusicDescription(text: text.isEmpty ? intro.text : text, source: full.source, sourceName: full.sourceName)
++                cache[key] = (Date(), result)
++                return result
++            }
++            cache[key] = (Date(), intro); return intro
++        } catch { return Task.isCancelled ? nil : matched }
++    }
++
++    static func songBackgroundText(_ extract: String) -> String {
++        let topics = ["background", "writing", "composition", "recording", "production", "release", "reception", "music video", "performance", "legacy", "meaning", "interpretation"]
++        // Plain-text mathematical notation is not readable prose. Omit a
++        // formula-heavy section rather than displaying broken LaTeX fragments.
++        let prose = extract.components(separatedBy: "\n== ").filter { !$0.contains("\\displaystyle") && !$0.contains("\\begin{") }.joined(separator: "\n== ")
++        var include = true, lines: [String] = [], length = 0, contentEnd = 0
++        for raw in prose.components(separatedBy: .newlines) {
++            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
++            if line.hasPrefix("==") {
++                let level = line.prefix { $0 == "=" }.count
++                let heading = line.trimmingCharacters(in: CharacterSet(charactersIn: "= "))
++                if level == 2 { include = topics.contains { heading.lowercased().contains($0) } }
++                if include && length + heading.count < 9000 { lines += ["", heading, ""]; length += heading.count + 3 }
++            } else if include && !line.isEmpty {
++                guard length + line.count + 2 <= 9000 else { break }
++                lines.append(line); lines.append(""); length += line.count + 2; contentEnd = lines.count
++            }
++        }
++        return lines.prefix(contentEnd).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
++    }
++
+     static func parse(_ data: Data, title: String, artist: String?, subject: Subject) -> MusicDescription? {
+         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let pages = (root["query"] as? [String: Any])?["pages"] as? [[String: Any]] else { return nil }
+         for page in pages {
+             guard page["missing"] == nil, (page["pageprops"] as? [String: Any])?["disambiguation"] == nil,
+                   let pageTitle = page["title"] as? String, let extract = page["extract"] as? String, extract.count > 80,
+-                  let raw = page["fullurl"] as? String, let source = URL(string: raw), source.host == "en.wikipedia.org" else { continue }
++                  let raw = page["fullurl"] as? String, let source = URL(string: raw), source.scheme == "https", source.host == "en.wikipedia.org" else { continue }
+             let base = pageTitle.replacingOccurrences(of: #"\s*\([^)]*\)$"#, with: "", options: .regularExpression)
+             guard AppleAlbumArtworkSource.normalized(base) == AppleAlbumArtworkSource.normalized(title) else { continue }
+             let intro = AppleAlbumArtworkSource.normalized(String(extract.prefix(900)))

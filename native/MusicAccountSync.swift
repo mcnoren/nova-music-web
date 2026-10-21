@@ -112,7 +112,7 @@ final class MusicAccountSync: ObservableObject {
                   incoming.records.keys.allSatisfy({ $0.hasPrefix("connect:") }),
                   let merged = try? self.document.merging(incoming) else { return }
             if merged != self.document {
-                self.document = merged; self.receiveConnection(); try? self.saveDocument()
+                self.document = merged; self.receiveConnection()
                 self.publishLocalConnection()
             }
         }
@@ -120,14 +120,14 @@ final class MusicAccountSync: ObservableObject {
         self.localPlayback.onError = { [weak self] message in self?.outputError = message }
         store.player.connectedPlaybackChanged = { [weak self] in self?.schedulePlaybackPublication() }
         store.player.connectedCommand = { [weak self] action in self?.routeControl(action) ?? false }
-        Publishers.MergeMany(store.player.$loading.map { _ in () }.eraseToAnyPublisher(),store.player.$ready.map { _ in () }.eraseToAnyPublisher(),store.player.$playing.map { _ in () }.eraseToAnyPublisher(),store.player.$currentVideoID.map { _ in () }.eraseToAnyPublisher(),store.player.$trackLyrics.map { _ in () }.eraseToAnyPublisher(),store.player.$lyricCalibration.map { _ in () }.eraseToAnyPublisher(),store.player.$playlistIDs.map { _ in () }.eraseToAnyPublisher(),store.player.$playlistIndex.map { _ in () }.eraseToAnyPublisher(),store.player.$shuffled.map { _ in () }.eraseToAnyPublisher(),store.player.$repeatMode.map { _ in () }.eraseToAnyPublisher())
+        Publishers.MergeMany(store.player.$loading.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$ready.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$playing.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$currentVideoID.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$trackLyrics.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$lyricCalibration.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$playlistIDs.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$playlistIndex.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$shuffled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),store.player.$repeatMode.removeDuplicates().map { _ in () }.eraseToAnyPublisher())
             .sink { [weak self] _ in self?.lastStatus = .distantPast; self?.schedulePlaybackPublication() }.store(in:&subscriptions)
         store.objectWillChange.debounce(for:.milliseconds(700),scheduler:RunLoop.main).sink { [weak self] _ in
             Task { @MainActor in self?.changed() }
         }.store(in:&subscriptions)
-        NotificationCenter.default.publisher(for:UserDefaults.didChangeNotification).debounce(for:.milliseconds(700),scheduler:RunLoop.main).sink { [weak self] _ in
-            Task { @MainActor in self?.changed() }
-        }.store(in:&subscriptions)
+        // Library mutations publish through the store, including defaults-backed
+        // pins/order. Clock checkpoints and sync-cache writes must not recapture
+        // and re-encode every song and cover through didChangeNotification.
         NotificationCenter.default.publisher(for: .CKAccountChanged).sink { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.usesICloud else { return }
@@ -227,7 +227,12 @@ final class MusicAccountSync: ObservableObject {
         await sync()
     }
     private var cacheKey: String { (usesICloud ? "music.icloud.document." : usesGitHub ? "music.github.document." : "music.sync.document.") + (user?.id.uuidString.lowercased() ?? "guest") }
-    private func saveDocument() throws { guard let store else { return }; store.defaults.set(try JSONEncoder().encode(document),forKey:cacheKey) }
+    private func saveDocument() throws {
+        guard let store else { return }
+        // Live device status is ephemeral. Keep it out of the library disk cache.
+        let saved = usesICloud ? document.cloudPartition(connection: false) : document
+        store.defaults.set(try JSONEncoder().encode(saved),forKey:cacheKey)
+    }
     func changed() { captureChanges(schedule: true) }
     private func captureChanges(schedule: Bool) {
         guard user != nil, !applying, let store else { return }
@@ -751,7 +756,8 @@ extension MusicAccountSync {
         let old = document.values; var next = old; next.merge(values,uniquingKeysWith:{ _,new in new })
         document = try document.updating(previous:old,next:next,actor:actor)
         publishLocalConnection()
-        previous.merge(values,uniquingKeysWith:{ _,new in new }); connectionNeedsSync = true; try saveDocument()
+        previous.merge(values,uniquingKeysWith:{ _,new in new }); connectionNeedsSync = true
+        if !usesICloud { try saveDocument() }
     }
     private func localSnapshot() -> MusicConnectedSnapshot {
         guard let store else { return MusicConnectedSnapshot() }

@@ -204,3 +204,5 @@ button.review-row:hover,button.song-search-row:hover{background:#ffffff0e}.revie
 .reorderable img,.reorderable a{-webkit-user-drag:none}
 .folder-drag-gallery .folder-item-actions{position:absolute;right:4px;top:4px;background:#111a;border-radius:50%}
 .folder-drag-gallery .item-pin{position:absolute;left:18px;top:18px;background:#111c;border-radius:50%;padding:6px}
+
+.song-info-art{display:block;width:112px;height:112px;object-fit:cover;border-radius:12px;margin:0 0 18px}
