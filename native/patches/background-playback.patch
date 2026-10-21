@@ -1,0 +1,195 @@
+--- a/NovaBrowser/YouTubePlayer.swift
++++ b/NovaBrowser/YouTubePlayer.swift
+@@ -250,6 +250,9 @@
+     private var lastHDDiagnostics = Date.distantPast
+     private var hdPresentationSize = CGSize.zero
+     private var nativeLoadBackgroundTask: UIBackgroundTaskIdentifier = .invalid
++    private var nativeBackgroundLoadEpoch = UUID()
++    // Injectable observer timing exercises delayed app callbacks without blocking AVFoundation.
++    private let queueEventDeliveryDelay: TimeInterval
+     // AVKit presents the video player and uses the app-wide Now Playing center.
+     // A separate MPNowPlayingSession is reserved for the music audio engine.
+     lazy var nowPlayingSession = MPNowPlayingSession(players: [nativePlayer])
+@@ -319,6 +322,17 @@
+         let item: AVPlayerItem
+         let source: YouTubeStreamSource
+     }
++    private struct NativeQueueBoundary {
++        let item: AVPlayerItem
++        let next: AVPlayerItem
++        let id: String
++        let index: Int
++        let duration: Double
++        let label: String?
++    }
++    // Retain outgoing identities until end notifications arrive, even if the
++    // native queue has already advanced while the app's main actor was asleep.
++    private var nativeQueueBoundaries: [NativeQueueBoundary] = []
+     private var preparedNext: PreparedNext?
+     var preparedNextVideoID: String? { preparedNext?.id }
+     private var externalPlaybackObservation: NSKeyValueObservation?
+@@ -417,8 +431,9 @@
+     init(defaults: UserDefaults = .standard, streamSourceProvider: (@Sendable (String, Bool) async throws -> YouTubeStreamSource)? = nil, hdPageURLProvider: ((String) -> URL)? = nil,
+          lyricsProvider: (@Sendable (YouTubeVideo, Double) async throws -> TrackLyrics?)? = nil,
+          audioSourceProvider: (@Sendable (String) async throws -> YouTubeStreamSource)? = nil,
+-         musicTrackProvider: (@Sendable (YouTubeVideo) async throws -> YouTubeVideo?)? = nil, playbackStallTimeout: TimeInterval = 8) {
++         musicTrackProvider: (@Sendable (YouTubeVideo) async throws -> YouTubeVideo?)? = nil, playbackStallTimeout: TimeInterval = 8, queueEventDeliveryDelay: TimeInterval = 0) {
+         self.defaults = defaults
++        self.queueEventDeliveryDelay = max(0, queueEventDeliveryDelay)
+         self.playbackStallTimeout = max(0.2, playbackStallTimeout)
+         self.streamSourceProvider = streamSourceProvider
+         self.musicTrackProvider = musicTrackProvider
+@@ -447,12 +462,26 @@
+         nativePlayer.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+         configurePlayerObservations()
+         NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)
+-            .receive(on: RunLoop.main)
++            .delay(for: .seconds(max(0, queueEventDeliveryDelay)), scheduler: RunLoop.main)
+             .sink { [weak self] notification in
+-                guard let self, let item = notification.object as? AVPlayerItem,
+-                      item === self.nativePlayer.currentItem else { return }
++                guard let self, let item = notification.object as? AVPlayerItem else { return }
++                if let index = self.nativeQueueBoundaries.firstIndex(where: { $0.item === item }) {
++                    let boundary = self.nativeQueueBoundaries.remove(at: index)
++                    let premature = Self.musicEndIsPremature(position: item.currentTime().seconds, duration: max(boundary.duration, Self.finite(item.duration.seconds)), label: boundary.label)
++                    if item !== self.nativePlayer.currentItem {
++                        if premature, self.intendsPlayback, self.nativePlayer.currentItem === boundary.next {
++                            self.playlistIndex = boundary.index
++                            self.loadVideo(boundary.id, refreshStream: true, startAt: max(0, Self.finite(item.currentTime().seconds)), stallRecovery: true)
++                        }
++                        return
++                    }
++                    // A healthy prepared transition belongs to AVQueuePlayer;
++                    // a second next() here would skip a song at the boundary.
++                    if !premature { return }
++                }
++                guard item === self.nativePlayer.currentItem else { return }
+                 // An interrupted/truncated stream must reconnect the same song.
+-                // Keep prepared items paused until we validate the old recording's end.
++                // Prepared transitions also validate the outgoing item above, after native advance.
+                 if self.audioOnly, !self.isLive,
+                    Self.musicEndIsPremature(position: item.currentTime().seconds,
+                        duration: self.duration, label: self.musicTracks[self.currentVideoID ?? ""]?.durationLabel) {
+@@ -512,6 +541,7 @@
+         currentItemObservation = nativePlayer.observe(\.currentItem, options: [.new]) { [weak self] player, _ in
+             let item = player.currentItem
+             Task { @MainActor in
++                if let delay = self?.queueEventDeliveryDelay, delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                 guard let self, let item, item === self.nativePlayer.currentItem,
+                       let prepared = self.preparedNext, prepared.item === item else { return }
+                 self.adoptPreparedNext(prepared)
+@@ -786,6 +816,7 @@
+         playbackWatchdog?.cancel(); playbackWatchdog = nil; playbackWatchdogID = UUID()
+         if ready { currentTime = Self.finite(nativePlayer.currentTime().seconds) }
+         intendsPlayback = false; resumeAfterInterruption = false
++        endNativeBackgroundLoad()
+         explicitPlayDuringInterruption = false; siriPlaybackPending = false
+         retainPausedSessionIfNeeded()
+         hdWebEngine.setPlaying(false)
+@@ -819,6 +850,7 @@
+         else { return }
+         if let prepared = preparedNext, prepared.index == target, prepared.id == playlistIDs[target],
+            nativePlayer.items().contains(where: { $0 === prepared.item }) {
++            nativeQueueBoundaries.removeAll { $0.item === nativePlayer.currentItem }
+             nativePlayer.advanceToNextItem()
+             adoptPreparedNext(prepared)
+         } else {
+@@ -1267,6 +1299,9 @@
+         let preferHLS = prefersHLS
+         if let streamSourceProvider { return try await streamSourceProvider(id, preferHLS) }
+         if let cached = await YouTubeStreamCache.shared.cachedSource(id, preferHLS: preferHLS) { return cached }
++        // WebKit is suspendable after Home/lock. Background recovery must
++        // finish through the native transport, not wait for JavaScript there.
++        if backgroundPlaybackRequested { return try await YouTubeStreamResolver.source(id, preferHLS: preferHLS) }
+         if !prefetch { resolvingInWeb = true }
+         // Give the direct endpoint a short head start, then race the hidden resolver.
+         // A slow endpoint must not add its entire timeout to playback startup.
+@@ -1301,8 +1336,9 @@
+     /// muxed video/HLS stream. Use the same path for the next queued recording.
+     private func resolvePlaybackStream(_ id: String, prefetch: Bool = false) async throws -> YouTubeStreamSource {
+         // If an audio URL resolves but AVFoundation rejects the item, the bounded
+-        // startup retry tries the existing muxed transport instead of repeating it.
+-        if audioOnly && (!startupRetryUsed || prefetch) && (audioSourceProvider != nil || streamSourceProvider == nil) {
++        // foreground retry tries the muxed transport. Background retries keep using
++        // native audio because the web resolver may be suspended.
++        if audioOnly && (backgroundPlaybackRequested || !startupRetryUsed || prefetch) && (audioSourceProvider != nil || streamSourceProvider == nil) {
+             do { return try await resolveBackgroundAudio(id) }
+             catch { try Task.checkCancellation() }
+         }
+@@ -1403,6 +1439,7 @@
+         prefetchTask?.cancel(); prefetchTask = nil
+         prefetchBridge?.cancel()
+         preparedNext = nil
++        nativeQueueBoundaries.removeAll { $0.item === nativePlayer.currentItem }
+         for item in nativePlayer.items() where item !== nativePlayer.currentItem { nativePlayer.remove(item) }
+         nativePlayer.actionAtItemEnd = .pause
+     }
+@@ -1427,8 +1464,15 @@
+                 guard self.generation == requestID, self.nextMusicIndex() == index, self.playlistIDs[index] == id,
+                       self.nativePlayer.currentItem === currentItem, self.nativePlayer.canInsert(item, after: currentItem) else { return }
+                 self.preparedNext = PreparedNext(id: id, index: index, audio: audio, item: item, source: source)
+-                self.nativePlayer.actionAtItemEnd = .pause
++                if let previousID = self.currentVideoID {
++                    self.nativeQueueBoundaries.append(.init(item: currentItem, next: item, id: previousID,
++                        index: self.playlistIndex, duration: self.duration, label: self.musicTracks[previousID]?.durationLabel))
++                    self.nativeQueueBoundaries = Array(self.nativeQueueBoundaries.suffix(4))
++                }
+                 self.nativePlayer.insert(item, after: currentItem)
++                // Advancing in AVFoundation keeps audio alive even when UIKit
++                // and our notification handlers aren't scheduled at song end.
++                self.nativePlayer.actionAtItemEnd = .advance
+             } catch {
+                 // Current playback continues if the next recording can't prepare.
+                 // Normal next-track loading retains the retry/error behavior.
+@@ -1618,7 +1662,9 @@
+         updateTimeline(item)
+         if intendsPlayback { startNativePlayback() }
+         else { retainPausedSessionIfNeeded(); updateNowPlaying() }
+-        endNativeBackgroundLoad()
++        // readyToPlay isn't proof of advancing audio. Keep the startup grant
++        // until the watchdog observes the native clock, or the user pauses.
++        if !audioOnly || !intendsPlayback { endNativeBackgroundLoad() }
+         if backgroundAudioOnlyActive {
+             if !backgroundPlaybackRequested { restoreForegroundVideo() }
+         }
+@@ -1626,9 +1672,10 @@
+
+     private func beginNativeBackgroundLoad() {
+         guard nativeLoadBackgroundTask == .invalid else { return }
+-        nativeLoadBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Restore native video") { [weak self] in
++        let epoch = UUID(); nativeBackgroundLoadEpoch = epoch
++        nativeLoadBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Prepare native playback") { [weak self] in
+             Task { @MainActor in
+-                guard let self else { return }
++                guard let self, self.nativeBackgroundLoadEpoch == epoch else { return }
+                 self.endNativeBackgroundLoad()
+                 if !self.ready { self.pause(); self.error = "Background playback could not connect. Retry in the app." }
+             }
+@@ -1637,8 +1684,9 @@
+
+     private func endNativeBackgroundLoad() {
+         guard nativeLoadBackgroundTask != .invalid else { return }
+-        UIApplication.shared.endBackgroundTask(nativeLoadBackgroundTask)
+-        nativeLoadBackgroundTask = .invalid
++        let task = nativeLoadBackgroundTask
++        nativeLoadBackgroundTask = .invalid; nativeBackgroundLoadEpoch = UUID()
++        UIApplication.shared.endBackgroundTask(task)
+     }
+
+     private func applyCaptions() {
+@@ -1808,6 +1856,7 @@
+         let position = currentTime, requestID = generation
+         let liveOffset = liveDelay
+         nativePauseTask?.cancel(); ready = false; loading = intendsPlayback
++        if backgroundPlaybackRequested && intendsPlayback { beginNativeBackgroundLoad() }
+         nativePlayer.pause()
+         recoveryTask = Task { [weak self] in
+             defer { if self?.generation == requestID { self?.recoveryTask = nil } }
+@@ -1831,6 +1880,7 @@
+     }
+
+     private func cancelCurrentLoad() {
++        nativeQueueBoundaries.removeAll()
+         siriAudioHandoffTask?.cancel(); siriAudioHandoffTask = nil
+         playbackWatchdog?.cancel(); playbackWatchdog = nil; playbackWatchdogID = UUID()
+         pendingSeek = nil

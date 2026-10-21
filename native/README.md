@@ -1,3 +1,9 @@
+# iPhone background playback (October 20, 2026)
+
+Apply `patches/background-playback.patch` to the full Xcode project. Prepared music items now advance through AVQueuePlayer instead of pausing until Nova's end notification runs. Outgoing recording identities remain available so truncated streams reconnect the original song even after native advancement. Explicit skips, queue edits and cancellation discard stale transitions. Native audio remains the first retry path in the background; a suspended WebKit resolver is never required there. Startup/reconnection background grants last until an advancing audio clock is observed, and stale grant expirations cannot cancel a newer connection.
+
+Add `BackgroundPlaybackTests.swift` to the native test target. Seven focused simulator regressions passed, covering 32 seconds of continuous playback and pause, native-audio retry, delayed queue-event delivery, legitimate completion, premature endings before/after native advancement, and official-audio selection for the prepared next song. This validates the native playback paths in the simulator; a signed iPhone build and a physical lock-screen/background check are still required. This repository publishes the integration source, not an installed iPhone update.
+
 # Folder redesign and direct reordering (October 20, 2026)
 
 The iPhone/iPad folder screen now has compact controls, single-line collection titles, actual album/playlist artwork, folder badges, no type filter and no arrangement mode. A shared native UICollectionView handles long-press drag previews, insertion gaps, drops and edge scrolling in folder list/gallery views, the queue, playlist song management and layout ordering. Editable playlist pages also support direct song dragging with the existing selection table and continuous scrolling of its containing view. The genre list no longer needs an Edit button.
