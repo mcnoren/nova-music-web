@@ -1,0 +1,387 @@
+--- a/NovaBrowser/MusicLibrarySelection.swift
++++ b/NovaBrowser/MusicLibrarySelection.swift
+@@ -1,15 +1,17 @@
+ import SwiftUI
+ import UIKit
+ import PhotosUI
++import ImageIO
+
+ struct MusicCollectionArtwork: View {
+     let choice: MusicCollectionArtworkChoice?
+     let covers: [URL]
+     var symbol = "folder.fill"
++    @Environment(\.displayScale) private var displayScale
+     var body: some View {
+         GeometryReader { geometry in
+             Group {
+-                if choice?.style == .photo, let filename = choice?.photoFile, let url = MusicArtworkFiles.url(filename), let image = UIImage(contentsOfFile: url.path) {
++                if choice?.style == .photo, let filename = choice?.photoFile, let image = MusicFolderArtworkCache.image(filename, pixels: max(geometry.size.width, geometry.size.height) * displayScale) {
+                     Image(uiImage: image).resizable().scaledToFill()
+                         .frame(width: geometry.size.width, height: geometry.size.height)
+                 } else if choice?.style == .collage {
+@@ -47,6 +49,33 @@
+     }
+ }
+
++/// Imported covers have immutable filenames. Cache a bounded set of decoded,
++/// display-sized images instead of reopening the full photo on each body update.
++@MainActor enum MusicFolderArtworkCache {
++    private static let cache: NSCache<NSString, UIImage> = {
++        let result = NSCache<NSString, UIImage>()
++        result.totalCostLimit = 16 * 1024 * 1024
++        result.countLimit = 100
++        return result
++    }()
++    static func image(_ filename: String, pixels: CGFloat) -> UIImage? {
++        guard pixels.isFinite, pixels > 0, let url = MusicArtworkFiles.url(filename) else { return nil }
++        let dimension = min(768, max(64, Int(ceil(pixels / 64)) * 64))
++        let key = "\(filename):\(dimension)" as NSString
++        if let image = cache.object(forKey: key) { return image }
++        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
++              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
++                kCGImageSourceCreateThumbnailFromImageAlways: true,
++                kCGImageSourceThumbnailMaxPixelSize: dimension,
++                kCGImageSourceCreateThumbnailWithTransform: true,
++                kCGImageSourceShouldCacheImmediately: true
++              ] as CFDictionary) else { return nil }
++        let image = UIImage(cgImage: thumbnail)
++        cache.setObject(image, forKey: key, cost: thumbnail.bytesPerRow * thumbnail.height)
++        return image
++    }
++}
++
+ struct MusicArtworkEditor: View {
+     @ObservedObject var store: YouTubeStore
+     let target: MusicArtworkTarget
+@@ -111,7 +140,7 @@
+     var activate: (Item) -> Void
+     @ViewBuilder var row: (Item) -> Row
+     func makeCoordinator() -> Coordinator { Coordinator(self) }
+-    func makeUIView(context: Context) -> MusicSelectionTableView {
++    func makeUIView(context: Context) -> MusicSelectionViewport {
+         let table = MusicSelectionTableView(frame: .zero, style: .plain)
+         table.backgroundColor = .clear; table.separatorStyle = .none
+         table.rowHeight = rowHeight; table.estimatedRowHeight = rowHeight
+@@ -121,15 +150,20 @@
+         table.dragDelegate = context.coordinator; table.dropDelegate = context.coordinator
+         table.dragInteractionEnabled = onMove != nil
+         table.accessibilityIdentifier = "MusicMultiSelectList"
+-        return table
+-    }
+-    func updateUIView(_ table: MusicSelectionTableView, context: Context) {
++        return MusicSelectionViewport(table: table)
++    }
++    func updateUIView(_ viewport: MusicSelectionViewport, context: Context) {
++        let table = viewport.table
+         let coordinator = context.coordinator
+-        let changed = coordinator.parent.items != items
++        let changed = coordinator.parent.items != items || (coordinator.parent.sectionTitle == nil) != (sectionTitle == nil)
++        let selectionChanged = coordinator.lastSelected != selected || coordinator.lastSelecting != selecting
++        coordinator.lastSelected = selected; coordinator.lastSelecting = selecting
+         let editChanged = table.isEditing != selecting
+         let appearanceChanged = coordinator.parent.headerColor != headerColor || coordinator.parent.contentRevision != contentRevision
+         coordinator.parent = self
++        if changed { coordinator.rebuildIndex() }
+         table.isScrollEnabled = scrolling; table.rowHeight = rowHeight
++        viewport.setNeedsLayout()
+         if editChanged { table.setEditing(selecting, animated: !coordinator.interacting) }
+         table.dragInteractionEnabled = onMove != nil && !selecting
+         if changed && !coordinator.interacting { table.reloadData() }
+@@ -139,32 +173,49 @@
+         if appearanceChanged {
+             for index in coordinator.sections.indices { table.headerView(forSection: index)?.textLabel?.textColor = headerColor }
+         }
+-        if !coordinator.interacting {
+-            for (path, item) in coordinator.indexedItems {
+-                if selecting && selected.contains(item.id) { table.selectRow(at: path, animated: false, scrollPosition: .none) }
+-                else { table.deselectRow(at: path, animated: false) }
+-            }
+-        }
+-    }
+-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: MusicSelectionTableView, context: Context) -> CGSize? {
++        if !coordinator.interacting && (changed || selectionChanged) {
++            let wanted = selecting ? Set(selected.compactMap { coordinator.pathsByID[$0] }) : []
++            let existing = Set(table.indexPathsForSelectedRows ?? [])
++            for path in existing.subtracting(wanted) { table.deselectRow(at: path, animated: false) }
++            for path in wanted.subtracting(existing) { table.selectRow(at: path, animated: false, scrollPosition: .none) }
++        }
++    }
++    static func dismantleUIView(_ viewport: MusicSelectionViewport, coordinator: Coordinator) {
++        let table = viewport.table
++        viewport.stopObserving()
++        coordinator.endDrag()
++        table.dataSource = nil; table.delegate = nil; table.dragDelegate = nil; table.dropDelegate = nil
++    }
++    func sizeThatFits(_ proposal: ProposedViewSize, uiView: MusicSelectionViewport, context: Context) -> CGSize? {
+         let headers = context.coordinator.sections.filter { $0.0 != nil }.count
+         return CGSize(width: proposal.width ?? 320, height: scrolling ? proposal.height ?? 500 : CGFloat(items.count) * rowHeight + CGFloat(headers) * 36)
+     }
+     final class Coordinator: NSObject, UITableViewDataSource, UITableViewDelegate, UITableViewDragDelegate, UITableViewDropDelegate {
+         var parent: MusicNativeSelectionRows
+         var interacting = false
+-        init(_ parent: MusicNativeSelectionRows) { self.parent = parent }
+-        var sections: [(String?, [Item])] {
+-            guard let title = parent.sectionTitle else { return [(nil, parent.items)] }
++        var lastSelected: Set<Item.ID> = []
++        var lastSelecting = false
++        private(set) var sections: [(String?, [Item])] = []
++        private(set) var pathsByID: [Item.ID: IndexPath] = [:]
++        init(_ parent: MusicNativeSelectionRows) { self.parent = parent; super.init(); rebuildIndex() }
++        func rebuildIndex() {
++            guard let title = parent.sectionTitle else {
++                sections = [(nil, parent.items)]; indexPaths(); return
++            }
+             var result: [(String?, [Item])] = []
+             for item in parent.items {
+                 let name = title(item)
+                 if result.last?.0 == name, !result.isEmpty { result[result.count - 1].1.append(item) }
+                 else { result.append((name, [item])) }
+             }
+-            return result
+-        }
+-        var indexedItems: [(IndexPath, Item)] { sections.enumerated().flatMap { section, group in group.1.enumerated().map { (IndexPath(row: $0.offset, section: section), $0.element) } } }
++            sections = result; indexPaths()
++        }
++        private func indexPaths() {
++            pathsByID = [:]; pathsByID.reserveCapacity(parent.items.count)
++            for (section, group) in sections.enumerated() {
++                for (row, item) in group.1.enumerated() { pathsByID[item.id] = IndexPath(row: row, section: section) }
++            }
++        }
+         func item(at path: IndexPath) -> Item? {
+             let groups = sections
+             guard groups.indices.contains(path.section), groups[path.section].1.indices.contains(path.row) else { return nil }
+@@ -231,7 +282,10 @@
+             scroll.contentOffset.y = min(high, max(low, scroll.contentOffset.y + delta))
+         }
+         func tableView(_ tableView: UITableView, dragSessionDidEnd session: UIDragSession) {
+-            edgeDisplayLink?.invalidate(); edgeDisplayLink = nil; draggedID = nil; interacting = false
++            endDrag()
++        }
++        func endDrag() {
++            edgeDisplayLink?.invalidate(); edgeDisplayLink = nil; scrollHost = nil; draggedID = nil; interacting = false
+         }
+         func tableView(_ tableView: UITableView, canHandle session: UIDropSession) -> Bool { session.items.first?.localObject as? Coordinator === self }
+         func tableView(_ tableView: UITableView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destinationIndexPath: IndexPath?) -> UITableViewDropProposal {
+@@ -247,6 +301,62 @@
+             coordinator.drop(drop.dragItem, toRowAt: path)
+         }
+
++    }
++}
++
++/// The SwiftUI scroll view owns the full song-list height, but UIKit only mounts
++/// a screenful of rows. A full-height embedded table otherwise creates every cell
++/// (including artwork and Combine subscriptions) before the first scroll.
++final class MusicSelectionViewport: UIView {
++    let table: MusicSelectionTableView
++    private weak var scrollHost: UIScrollView?
++    private var offsetObservation: NSKeyValueObservation?
++    private var boundsObservation: NSKeyValueObservation?
++    init(table: MusicSelectionTableView) {
++        self.table = table
++        super.init(frame: .zero)
++        clipsToBounds = true
++        table.contentInsetAdjustmentBehavior = .never
++        table.sectionHeaderTopPadding = 0
++        addSubview(table)
++    }
++    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
++    override func didMoveToWindow() {
++        super.didMoveToWindow()
++        stopObserving()
++        if window != nil {
++            var ancestor = superview
++            while let view = ancestor {
++                if let scroll = view as? UIScrollView {
++                    scrollHost = scroll
++                    offsetObservation = scroll.observe(\.contentOffset) { [weak self] _, _ in self?.updateViewport() }
++                    boundsObservation = scroll.observe(\.bounds) { [weak self] _, _ in self?.updateViewport() }
++                    break
++                }
++                ancestor = view.superview
++            }
++        }
++        setNeedsLayout()
++    }
++    func stopObserving() {
++        offsetObservation?.invalidate(); offsetObservation = nil
++        boundsObservation?.invalidate(); boundsObservation = nil
++        scrollHost = nil
++    }
++    override func layoutSubviews() { super.layoutSubviews(); updateViewport() }
++    func updateViewport() {
++        guard !table.isScrollEnabled, let scroll = scrollHost, bounds.height > 0 else {
++            if table.frame != bounds { table.frame = bounds }
++            return
++        }
++        let visible = convert(scroll.bounds, from: scroll)
++        let overscan = table.rowHeight * 2
++        let height = min(bounds.height, max(1, scroll.bounds.height + overscan * 2))
++        let top = min(max(0, visible.minY - overscan), max(0, bounds.height - height))
++        let frame = CGRect(x: 0, y: top, width: bounds.width, height: height)
++        if table.frame != frame { table.frame = frame }
++        table.layoutIfNeeded()
++        if table.contentOffset.y != top { table.contentOffset = CGPoint(x: 0, y: top) }
+     }
+ }
+
+@@ -677,7 +787,7 @@
+
+ /// One native drag surface for list rows and gallery cards. UIKit owns the lift,
+ /// insertion gap, drop animation and edge scrolling on both iPhone and iPad.
+-struct MusicReorderableCollection<Item: Identifiable, Header: View, Row: View>: UIViewRepresentable where Item.ID: Hashable {
++struct MusicReorderableCollection<Item: Identifiable & Equatable, Header: View, Row: View>: UIViewRepresentable where Item.ID: Hashable {
+     var items: [Item]
+     var gallery = false
+     var rowHeight: CGFloat = 80
+@@ -711,7 +821,7 @@
+         return view
+     }
+     func updateUIView(_ view: UICollectionView, context: Context) {
+-        let changedLayout = context.coordinator.parent.gallery != gallery
++        let changedLayout = context.coordinator.parent.gallery != gallery || context.coordinator.parent.rowHeight != rowHeight
+         context.coordinator.parent = self
+         view.dragInteractionEnabled = reorderingEnabled
+         if changedLayout { view.collectionViewLayout.invalidateLayout() }
+@@ -724,6 +834,10 @@
+         weak var view: UICollectionView?
+         var source: UICollectionViewDiffableDataSource<Int, Key>!
+         var dragging: Item.ID?
++        private var indexedItems: [Item.ID: Item] = [:]
++        private var appliedItems: [Item] = []
++        private var appliedKeys: [Key] = []
++        private var hasSnapshot = false
+         init(_ parent: MusicReorderableCollection) { self.parent = parent }
+         func configure(_ view: UICollectionView) {
+             self.view = view; view.dragDelegate = self; view.dropDelegate = self
+@@ -733,7 +847,7 @@
+                 switch key {
+                 case .header: cell.contentConfiguration = UIHostingConfiguration { self.parent.header() }.margins(.all, 0)
+                 case .item(let id):
+-                    if let item = self.parent.items.first(where: { $0.id == id }) {
++                    if let item = self.indexedItems[id] {
+                         cell.contentConfiguration = UIHostingConfiguration { self.parent.row(item) }.margins(.all, 0)
+                     }
+                 }
+@@ -743,12 +857,35 @@
+         }
+         func update() {
+             guard dragging == nil else { return }
+-            var snapshot = NSDiffableDataSourceSnapshot<Int, Key>()
+-            snapshot.appendSections([0, 1]); snapshot.appendItems([.header], toSection: 0)
+-            snapshot.appendItems(parent.items.map { .item($0.id) }, toSection: 1)
+-            let existing = Set(source.snapshot().itemIdentifiers)
+-            snapshot.reconfigureItems(snapshot.itemIdentifiers.filter { existing.contains($0) })
+-            source.apply(snapshot, animatingDifferences: !UIAccessibility.isReduceMotionEnabled)
++            // Playback and selection changes can update the header/row closures.
++            // Refresh only mounted cells; offscreen rows use the latest parent on reuse.
++            let changed = appliedItems != parent.items
++            var orderChanged = false
++            if changed {
++                let keys = parent.items.map { Key.item($0.id) }
++                orderChanged = keys != appliedKeys; appliedKeys = keys
++                indexedItems = Dictionary(parent.items.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
++                appliedItems = parent.items
++            }
++            if !hasSnapshot || orderChanged {
++                let existing = source.snapshot()
++                hasSnapshot = true
++                var snapshot = NSDiffableDataSourceSnapshot<Int, Key>()
++                snapshot.appendSections([0, 1]); snapshot.appendItems([.header], toSection: 0)
++                snapshot.appendItems(appliedKeys, toSection: 1)
++                let surviving = Set(existing.itemIdentifiers)
++                snapshot.reconfigureItems((view?.indexPathsForVisibleItems ?? []).compactMap { source.itemIdentifier(for: $0) }.filter { surviving.contains($0) && snapshot.indexOfItem($0) != nil })
++                source.apply(snapshot, animatingDifferences: !existing.sectionIdentifiers.isEmpty && !UIAccessibility.isReduceMotionEnabled)
++            } else {
++                for path in view?.indexPathsForVisibleItems ?? [] {
++                    guard let cell = view?.cellForItem(at: path), let key = source.itemIdentifier(for: path) else { continue }
++                    switch key {
++                    case .header: cell.contentConfiguration = UIHostingConfiguration { self.parent.header() }.margins(.all, 0)
++                    case .item(let id):
++                        if let item = indexedItems[id] { cell.contentConfiguration = UIHostingConfiguration { self.parent.row(item) }.margins(.all, 0) }
++                    }
++                }
++            }
+         }
+         func collectionView(_ collectionView: UICollectionView, itemsForBeginning session: UIDragSession, at indexPath: IndexPath) -> [UIDragItem] {
+             guard parent.reorderingEnabled, case .item(let id) = source.itemIdentifier(for: indexPath) else { return [] }
+--- a/NovaBrowser/YouTubeStore.swift
++++ b/NovaBrowser/YouTubeStore.swift
+@@ -308,7 +308,7 @@
+ #if !os(watchOS)
+         restoreMusicSession()
+         if musicOnly {
+-            // Hop to the next run-loop turn so multi-property queue changes settle.
++            // Coalesce multi-property queue changes before encoding the full snapshot.
+             Publishers.MergeMany(player.$playlistIDs.map { _ in () }.eraseToAnyPublisher(),
+                 player.$playlistIndex.map { _ in () }.eraseToAnyPublisher(),
+                 player.$queueEntries.map { _ in () }.eraseToAnyPublisher(),
+@@ -316,9 +316,9 @@
+                 player.$repeatMode.map { _ in () }.eraseToAnyPublisher(),
+                 player.$intendsPlayback.map { _ in () }.eraseToAnyPublisher(),
+                 $current.map { _ in () }.eraseToAnyPublisher())
+-                .receive(on: RunLoop.main).sink { [weak self] in self?.saveMusicSession() }.store(in: &cancellables)
+-            player.$currentTime.throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
+-                .receive(on: RunLoop.main).sink { [weak self] _ in self?.saveMusicSession() }.store(in: &cancellables)
++                .debounce(for: .milliseconds(250), scheduler: RunLoop.main).sink { [weak self] in self?.saveMusicSession() }.store(in: &cancellables)
++            player.$currentTime.throttle(for: .seconds(5), scheduler: RunLoop.main, latest: true)
++                .receive(on: RunLoop.main).sink { [weak self] _ in self?.saveMusicPosition() }.store(in: &cancellables)
+             NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)
+                 .sink { [weak self] _ in self?.saveMusicSession() }.store(in: &cancellables)
+         }
+@@ -339,10 +339,25 @@
+         var playlistID: UUID?
+     }
+
++    private struct MusicPositionCheckpoint: Codable {
++        var songID: String
++        var position: Double
++        var duration: Double
++    }
++
++    // The queue is saved on structural changes. Clock ticks write only this small
++    // checkpoint, so a thousand-song playlist is not encoded repeatedly on main.
++    func saveMusicPosition() {
++        guard musicOnly, let song = current, player.currentTime.isFinite, player.duration.isFinite else { return }
++        let checkpoint = MusicPositionCheckpoint(songID: song.id, position: max(0, player.currentTime), duration: max(0, player.duration))
++        if let data = try? JSONEncoder().encode(checkpoint) { defaults.set(data, forKey: "music.lastPlaybackPosition") }
++    }
++
+     func saveMusicSession() {
+         guard musicOnly else { return }
+         guard let song = current else {
+             defaults.removeObject(forKey: "music.lastPlaybackSession")
++            defaults.removeObject(forKey: "music.lastPlaybackPosition")
+             return
+         }
+         let ids = player.playlistIDs.isEmpty ? [song.id] : player.playlistIDs
+@@ -354,7 +369,10 @@
+             position: max(0, player.currentTime), duration: max(0, player.duration), shuffle: player.shuffled,
+             repeatMode: player.repeatMode.rawValue, context: musicPlaybackContext,
+             contextSongIDs: musicContextSongIDs, playlistID: activePlaylistID)
+-        if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: "music.lastPlaybackSession") }
++        if let data = try? JSONEncoder().encode(saved) {
++            defaults.set(data, forKey: "music.lastPlaybackSession")
++            defaults.removeObject(forKey: "music.lastPlaybackPosition")
++        }
+     }
+
+     private func restoreMusicSession() {
+@@ -362,11 +380,15 @@
+               let saved = try? JSONDecoder().decode(SavedMusicSession.self, from: data),
+               saved.tracks.indices.contains(saved.index), saved.tracks.allSatisfy({ YouTubeLink.validID($0.id) }),
+               saved.position.isFinite, saved.position >= 0, saved.duration.isFinite, saved.duration >= 0 else { return }
++        let checkpoint = defaults.data(forKey: "music.lastPlaybackPosition").flatMap { try? JSONDecoder().decode(MusicPositionCheckpoint.self, from: $0) }
++        let validCheckpoint = checkpoint.flatMap { value in
++            value.songID == saved.tracks[saved.index].id && value.position.isFinite && value.position >= 0 && value.duration.isFinite && value.duration >= 0 ? value : nil
++        }
+         musicPlaybackContext = saved.context; musicContextSongIDs = saved.contextSongIDs
+         queueVideos = saved.tracks; current = saved.tracks[saved.index]
+         activePlaylistID = saved.playlistID; playingMusic = true; minimized = true
+         player.restoreMusicSession(tracks: saved.tracks, entries: saved.entries, index: saved.index,
+-            position: saved.position, duration: saved.duration, shuffle: saved.shuffle,
++            position: validCheckpoint?.position ?? saved.position, duration: validCheckpoint?.duration ?? saved.duration, shuffle: saved.shuffle,
+             repeatMode: YouTubePlayer.RepeatMode(rawValue: saved.repeatMode) ?? .off)
+     }
+ #endif

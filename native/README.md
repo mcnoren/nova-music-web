@@ -1,3 +1,13 @@
+# iPhone performance (October 21, 2026)
+
+Apply `patches/iphone-performance.patch` after the folder-redesign and background-playback integrations in the full Xcode project. Add `NativePerformanceTests.swift` to its test target. The local full project already contains these changes; do not apply the patch there again.
+
+Embedded song tables now render only a viewport plus a small overscan region, while the containing SwiftUI scroll view keeps the full list height. This preserves native selection, direct dragging and edge scrolling without mounting every song's artwork and subscriptions. Section indexes are built once per content change, selection updates touch changed rows, folder/queue collection updates refresh mounted cells with constant-time item lookup, and drag display links are invalidated on removal. Custom folder/playlist photos use display-sized decoded thumbnails in a 16 MB NSCache.
+
+Playback saves debounce structural queue changes. A five-second progress checkpoint stores only the current song identity, position and duration instead of re-encoding the entire queue every second. Backgrounding and playback state changes still save the complete session, and restoration rejects checkpoints from another song. Foreground animation cadence and the native gapless playback path are unchanged.
+
+Validation: 13 distinct focused simulator tests passed on the iPhone SE (3rd generation), iOS 18.6, including 32-second background playback, prepared queue advancement, session restoration, selection/gesture ownership, gallery/list rendering and drag cleanup. With 2,000 items, the song table mounted 13 rows and a folder refresh configured six visible rows. The test queue snapshot was 313,897 bytes; its progress checkpoint was 54 bytes. Cover-cache tests confirmed decoded 120-pixel requests stay within 128 pixels and reuse the decoded image. These are simulator regression results, not physical-device frame-rate or battery measurements. The installed iPhone app requires rebuilding and a signed-device check.
+
 # iPhone background playback (October 20, 2026)
 
 Apply `patches/background-playback.patch` to the full Xcode project. Prepared music items now advance through AVQueuePlayer instead of pausing until Nova's end notification runs. Outgoing recording identities remain available so truncated streams reconnect the original song even after native advancement. Explicit skips, queue edits and cancellation discard stale transitions. Native audio remains the first retry path in the background; a suspended WebKit resolver is never required there. Startup/reconnection background grants last until an advancing audio clock is observed, and stale grant expirations cannot cancel a newer connection.
