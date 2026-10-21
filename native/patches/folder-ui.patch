@@ -259,3 +259,12 @@
      }
  }
  
+@@ -1479,7 +1555,7 @@
+             case "folders": MusicFoldersPage(store: store)
+             case "classical": ClassicalMusicView(store: store, libraryDestination: true)
+             case "albums": collectionGrid(store.likedAlbums.map(MusicSelectionItem.album))
+-            case "playlists": collectionGrid(store.playlists.map(MusicSelectionItem.playlist))
++            case "playlists": collectionGrid(store.libraryPlaylists.map(MusicSelectionItem.playlist))
+             case "likedSongs": songList(store.likedSongs)
+             case "saved": songList(store.saved)
+             default: songList(store.librarySongs)

@@ -1,0 +1,168 @@
+--- a/Shared/NovaMusicCore/MusicCatalog.swift
++++ b/Shared/NovaMusicCore/MusicCatalog.swift
+@@ -95,6 +95,9 @@
+     var spotifySourceURL: URL? = nil
+     var spotifyUnmatchedTracks: [SpotifyUnmatchedTrack]? = nil
+     var spotifyImportSongIDs: [String?]? = nil
++
++    /// Absent on older libraries; true keeps the playlist available only through folders.
++    var folderOnly: Bool? = nil
+ 
+     var canEditSongs: Bool { youtubePlaylistID == nil && smartRules == nil }
+ 
+--- a/NovaBrowser/YouTubeStore.swift
++++ b/NovaBrowser/YouTubeStore.swift
+@@ -801,8 +801,16 @@
+         return playlist.id
+     }
+ 
++    var libraryPlaylists: [YouTubePlaylist] { playlists.filter { $0.folderOnly != true } }
++
++    func savePlaylistToLibrary(_ id: UUID) {
++        guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
++        playlists[index].folderOnly = false
++        persistPlaylists()
++    }
++
+     func playlists(for artist: YouTubeChannel) -> [YouTubePlaylist] {
+-        playlists.filter { $0.artist?.id == artist.id }
++        libraryPlaylists.filter { $0.artist?.id == artist.id }
+     }
+ 
+     func setArtist(_ artist: YouTubeChannel?, forPlaylist id: UUID) {
+@@ -819,15 +827,14 @@
+     }
+ 
+     func deletePlaylist(_ id: UUID) {
+-        setArtwork(nil, for: .playlist(id))
+-        playlists.removeAll { $0.id == id }
+-        for index in musicFolders.indices {
+-            musicFolders[index].playlistIDs.removeAll { $0 == id }
+-            musicFolders[index].pinnedItemIDs?.removeAll { $0 == MusicFolderItem.playlist(id).id }
+-        }
+-        persistMusicFolders()
+-        if activePlaylistID == id { activePlaylistID = nil }
+-        hydratedPlaylistSignatures[id] = nil
++        if musicFolders.contains(where: { $0.playlistIDs.contains(id) }) {
++            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
++            playlists[index].folderOnly = true
++        } else {
++            setArtwork(nil, for: .playlist(id))
++            playlists.removeAll { $0.id == id }
++            hydratedPlaylistSignatures[id] = nil
++        }
+         persistPlaylists()
+     }
+ 
+@@ -851,7 +858,7 @@
+     @discardableResult
+     func saveYouTubePlaylist(_ externalID: String, name: String = "YouTube Playlist") -> UUID? {
+         guard YouTubeLink.validPlaylistID(externalID) else { return nil }
+-        if let existing = playlists.first(where: { $0.youtubePlaylistID == externalID }) { return existing.id }
++        if let existing = playlists.first(where: { $0.youtubePlaylistID == externalID }) { savePlaylistToLibrary(existing.id); return existing.id }
+         let playlist = YouTubePlaylist(name: name, youtubePlaylistID: externalID)
+         playlists.insert(playlist, at: 0)
+         persistPlaylists()
+--- a/NovaBrowser/YouTubeView.swift
++++ b/NovaBrowser/YouTubeView.swift
+@@ -875,19 +875,19 @@
+         VStack(alignment: .leading, spacing: 16) {
+             HStack {
+                 Text("Playlists").font(.title2.bold()); Spacer()
+-                if !store.playlists.isEmpty { Button("Select") { selectingPlaylists = true }.font(.subheadline) }
++                if !store.libraryPlaylists.isEmpty { Button("Select") { selectingPlaylists = true }.font(.subheadline) }
+                 Menu {
+                     Button("New playlist", systemImage: "music.note.list") { creatingPlaylist = true }
+                     Button("New smart playlist", systemImage: "sparkles") { creatingSmartPlaylist = true }
+                     Button("Import playlist / CSV", systemImage: "square.and.arrow.down") { spotifyImportLink = ""; importingSpotify = true }
+                 } label: { Label("New", systemImage: "plus") }.font(.subheadline)
+             }.padding(.horizontal, 16)
+-            if store.playlists.isEmpty {
++            if store.libraryPlaylists.isEmpty {
+                 Text("Create a playlist to keep your favorite songs together.").foregroundStyle(.secondary).padding(.horizontal, 16)
+             } else {
+                 ScrollView(.horizontal, showsIndicators: false) {
+                     HStack(alignment: .top, spacing: 14) {
+-                        ForEach(librarySort == .title ? store.playlists.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } : store.playlists) { playlist in
++                        ForEach(librarySort == .title ? store.libraryPlaylists.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } : store.libraryPlaylists) { playlist in
+                             NavigationLink { YouTubePlaylistDetailView(store: store, playlistID: playlist.id, music: true) } label: { AlbumCard(playlist: playlist) }
+                                 .buttonStyle(FullAreaButtonStyle()).contextMenu {
+                                     MusicPlaylistQueueActions(store: store, playlist: playlist)
+@@ -899,7 +899,7 @@
+                 }
+             }
+         }.sheet(isPresented: $creatingSmartPlaylist) { MusicSmartPlaylistEditor(store: store) }
+-        .sheet(isPresented: $selectingPlaylists) { MusicBulkItemPicker(store: store, items: store.playlists.map(MusicSelectionItem.playlist)) }
++        .sheet(isPresented: $selectingPlaylists) { MusicBulkItemPicker(store: store, items: store.libraryPlaylists.map(MusicSelectionItem.playlist)) }
+     }
+ 
+     @ViewBuilder private func musicCollection(_ title: String, songs: [YouTubeVideo]) -> some View {
+@@ -943,7 +943,7 @@
+                         Spacer()
+                         Button { creatingPlaylist = true } label: { Label("New", systemImage: "plus").font(.system(size: 14, weight: .semibold)) }
+                     }
+-                    if store.playlists.isEmpty {
++                    if store.libraryPlaylists.isEmpty {
+                         Button { creatingPlaylist = true } label: {
+                             HStack(spacing: 14) {
+                                 Image(systemName: "plus").font(.title2).frame(width: 72, height: 72).background(YouTubeStyle.raised, in: RoundedRectangle(cornerRadius: 8))
+@@ -954,7 +954,7 @@
+                             }
+                         }.buttonStyle(FullAreaButtonStyle())
+                     } else {
+-                        ForEach(store.playlists) { playlist in
++                        ForEach(store.libraryPlaylists) { playlist in
+                             NavigationLink { YouTubePlaylistDetailView(store: store, playlistID: playlist.id) } label: {
+                                 HStack(spacing: 14) {
+                                     PlaylistArtwork(playlist: playlist).frame(width: 100, height: 72)
+@@ -2339,10 +2339,14 @@
+                         name = playlist?.name ?? ""
+                         editingName = true
+                     } label: { Label("Rename", systemImage: "pencil") }
+-                    Button(role: .destructive) {
+-                        store.deletePlaylist(playlistID)
+-                        dismiss()
+-                    } label: { Label("Delete Playlist", systemImage: "trash") }
++                    if playlist?.folderOnly == true {
++                        Button("Add to library", systemImage: "plus") { store.savePlaylistToLibrary(playlistID) }
++                    } else {
++                        Button(role: .destructive) {
++                            store.deletePlaylist(playlistID)
++                            dismiss()
++                        } label: { Label("Remove from library", systemImage: "trash") }
++                    }
+                     if let playlist { MusicPlaylistQuickActions(store: store, playlist: playlist) }
+                 } label: { Image(systemName: "ellipsis.circle") }
+             }
+@@ -2394,11 +2398,11 @@
+     var body: some View {
+         NavigationStack {
+             List {
+-                if store.playlists.isEmpty {
++                if store.libraryPlaylists.isEmpty {
+                     ContentUnavailableView("No playlists", systemImage: "music.note.list", description: Text("Create one below."))
+                 }
+ 
+-                ForEach(store.playlists.filter(\.canEditSongs)) { playlist in
++                ForEach(store.libraryPlaylists.filter(\.canEditSongs)) { playlist in
+                     Button {
+                         store.add(video, to: playlist.id)
+                         dismiss()
+@@ -2487,7 +2491,7 @@
+                         LabeledContent("Liked songs", value: "\(store.likedSongs.count)")
+                         LabeledContent("Liked albums", value: "\(store.likedAlbums.count)")
+                     }
+-                    LabeledContent("Playlists", value: "\(store.playlists.count)")
++                    LabeledContent("Playlists", value: "\(store.libraryPlaylists.count)")
+                     if !musicOnly { LabeledContent("Followed channels", value: "\(store.followedChannels.count)") }
+                     if musicOnly { LabeledContent("Followed artists", value: "\(store.followedArtists.count)") }
+                     Button(musicOnly ? "Clear listening history" : "Clear watch history", role: .destructive) { store.clearHistory() }
+@@ -2578,7 +2582,7 @@
+     @State private var copied = false
+     @State private var folderItem: MusicFolderItem?
+     private var playlist: YouTubePublicPlaylist { loaded ?? source }
+-    private var saved: Bool { store.playlists.contains { $0.youtubePlaylistID == source.id } }
++    private var saved: Bool { store.libraryPlaylists.contains { $0.youtubePlaylistID == source.id } }
+ 
+     var body: some View {
+         ScrollView {

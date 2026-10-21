@@ -1,3 +1,9 @@
+# Playlist library membership and smooth folder dragging (October 20, 2026)
+
+Removing a playlist from the library now preserves its identity, songs, artwork, folder slots and folder pins whenever a folder still references it. Folder-only playlists can be added back to the library. The shared Mac/web interface animates a lifted drag preview, live insertion slots, neighboring cards and the final drop, with edge scrolling, Escape cancellation and reduced-motion support.
+
+For the full iPhone project, apply `patches/playlist-membership.patch` after the existing folder UI integration; use the refreshed `patches/folder-ui.patch` when integrating those views from scratch. Copy the updated `MusicAccountLibrary.swift` adapter and add `PlaylistMembershipTests.swift` to the test target. The optional native `folderOnly` field reads existing libraries without migration and synchronizes with Mac/web membership.
+
 # Folder cover art (October 20, 2026)
 
 Mac and web folders support uploaded photos, album-cover collages, icons, and removing custom art. Open a folder and click its cover or choose **Folder settings → Edit cover art**. The selected image appears in the folder header, Home, and sidebar.

@@ -116,3 +116,17 @@ test('invalid folder artwork cannot enter or leave the sync library',()=>{
  values['folder:'+A]={id:A,name:'Folder',items:[],collectionArtwork:{style:'icon',symbol:'<script>'}};
  assert.throws(()=>applyLibraryValues(clean,values),/Invalid/);assert.deepEqual(clean.folders,[]);
 });
+test('library removal syncs membership while preserving playlist records and folder positions',async()=>{
+ const {removePlaylistFromLibrary}=await import('../docs/folder-controls.js');
+ const state=baseState();state.playlists=[{id:A,name:'Mix',songs:[song.id],collectionArtwork:{style:'icon',symbol:'star.fill'}}];
+ state.folders=[{id:B,name:'Favorites',items:[{kind:'playlist',id:A}],pins:['playlist:'+A]}];
+ const catalog={songs:[song],albums:[],artists:[]},before=libraryValues(state,catalog);
+ const original=updateDocument(emptyDocument(),{},before,A);
+ removePlaylistFromLibrary(state,A);
+ const updated=updateDocument(original,before,libraryValues(state,catalog),A);
+ assert.equal(updated.records['playlist:'+A].deleted,false);
+ const restored=applyLibraryValues(baseState(),valuesOf(updated));
+ assert.equal(restored.playlists[0].folderOnly,true);assert.equal(restored.playlists[0].folderReference,false);
+ assert.deepEqual(restored.playlists[0].songs,[song.id]);assert.deepEqual(restored.playlists[0].collectionArtwork,state.playlists[0].collectionArtwork);
+ assert.deepEqual(restored.folders[0].items,state.folders[0].items);assert.deepEqual(restored.folders[0].pins,state.folders[0].pins);
+});

@@ -31,3 +31,26 @@ test('unavailable native storage retains changes in memory',()=>{
  const storage=createLibraryStorage({persistent:{getItem(){throw Error()},setItem(){throw Error()}}});
  assert.equal(storage.getItem('library'),null);storage.setItem('library','cloud pending');assert.equal(storage.getItem('library'),'cloud pending');
 });
+
+test('removing a saved playlist preserves every folder slot, pin, songs and artwork',async()=>{
+ const {removePlaylistFromLibrary}=await import('../docs/folder-controls.js');
+ const p={id:'p',name:'Mix',songs:['a','b'],collectionArtwork:{kind:'icon',symbol:'star'},sourceUrl:'https://open.spotify.com/playlist/source'};
+ const state={playlists:[p],libraryPins:['#playlist/p','#folder/f'],folders:[{items:[{kind:'album',id:'a'},{kind:'playlist',id:'p'}],pins:['playlist:p']},{items:[{kind:'playlist',id:'p'}]}]};
+ const folders=structuredClone(state.folders);
+ assert.equal(removePlaylistFromLibrary(state,'p'),true);
+ assert.deepEqual(state.folders,folders);assert.equal(state.playlists[0],p);
+ assert.deepEqual(p.songs,['a','b']);assert.deepEqual(p.collectionArtwork,{kind:'icon',symbol:'star'});
+ assert.equal(p.folderOnly,true);assert.equal(p.folderReference,false);assert.deepEqual(state.libraryPins,['#folder/f']);
+ p.folderOnly=false;assert.equal(state.playlists.length,1,'Adding back reuses the same playlist');
+});
+test('a removed saved YouTube copy stays a snapshot instead of becoming a live reference',async()=>{
+ const {removePlaylistFromLibrary}=await import('../docs/folder-controls.js');
+ const state={playlists:[{id:'p',songs:['saved-song'],sourceUrl:'https://www.youtube.com/playlist?list=PLsource'}],folders:[{items:[{kind:'playlist',id:'p'}]}]};
+ removePlaylistFromLibrary(state,'p');assert.equal(state.playlists[0].folderReference,false);assert.deepEqual(state.playlists[0].songs,['saved-song']);
+});
+test('unreferenced playlists can be deleted without affecting other playlists or folders',async()=>{
+ const {removePlaylistFromLibrary}=await import('../docs/folder-controls.js');
+ const state={playlists:[{id:'p'},{id:'q'}],folders:[{items:[{kind:'playlist',id:'q'}]}]};
+ assert.equal(removePlaylistFromLibrary(state,'missing'),false);removePlaylistFromLibrary(state,'p');
+ assert.deepEqual(state.playlists,[{id:'q'}]);assert.deepEqual(state.folders[0].items,[{kind:'playlist',id:'q'}]);
+});

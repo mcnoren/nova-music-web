@@ -48,6 +48,7 @@ enum MusicAccountLibrary {
             value["songs"] = .array(playlist.videos.map { .string($0.id) }); value["createdAt"] = .number(playlist.createdAt.timeIntervalSince1970 * 1000)
             value["artwork"] = .string(playlist.sourceArtwork?.absoluteString ?? ""); value["native"] = try .encoded(playlist)
             value["collectionArtwork"] = try sharedArtwork(playlist.customArtwork)
+            value["folderOnly"] = .bool(playlist.folderOnly == true)
             value["artistId"] = .string(playlist.artist?.id ?? "")
             if let source = playlist.spotifySourceURL { value["sourceUrl"] = .string(source.absoluteString) }
             else if let source = playlist.youtubePlaylistID { value["sourceUrl"] = .string("https://www.youtube.com/playlist?list=\(source)") }
@@ -147,6 +148,7 @@ enum MusicAccountLibrary {
             guard let text = value["id"]?.string, let id = UUID(uuidString:text), let name = value["name"]?.string,
                   let songIDs = value["songs"]?.array, songIDs.allSatisfy({ $0.string != nil }) else { throw NovaSyncFailure.invalidDocument }
             var playlist = (try? value["native"]?.decoded(YouTubePlaylist.self)) ?? YouTubePlaylist(name:name)
+            playlist.folderOnly = value["folderOnly"] == .bool(true)
             playlist.id = id; playlist.name = name; playlist.videos = songIDs.compactMap { $0.string }.map { songs[$0] ?? .placeholder($0) }
             let created = value["createdAt"]?.number ?? 0
             guard created >= 0, created < 8_640_000_000_000_000 else { throw NovaSyncFailure.invalidDocument }

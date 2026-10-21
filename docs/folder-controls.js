@@ -16,3 +16,16 @@ export function sidebarSelection(entries,limited=true) {
   return limited?list.slice(0,Math.max(5,list.filter(e=>e.pinned).length)):list;
  });
 }
+
+// Library membership is independent of membership in any folder.
+export function removePlaylistFromLibrary(state,id) {
+ const playlist=state.playlists.find(p=>p.id===id);
+ if(!playlist)return false;
+ if(state.folders.some(f=>f.items.some(i=>i.kind==='playlist'&&i.id===id))){
+  playlist.folderOnly=true;
+  // A removed saved copy keeps its songs; it must not become a live YouTube reference.
+  playlist.folderReference=false;
+ }else state.playlists=state.playlists.filter(p=>p.id!==id);
+ state.libraryPins=(state.libraryPins||[]).filter(href=>href!=='#playlist/'+encodeURIComponent(id));
+ return true;
+}
