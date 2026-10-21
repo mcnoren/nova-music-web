@@ -287,8 +287,8 @@ struct WatchDownloadsView: View {
     }
 }
 enum WatchContentCache {
-    static func read(_ id: String) -> [YouTubeVideo]? { UserDefaults(suiteName: WatchWidgetSnapshot.group)?.data(forKey: "watch.collection." + id).flatMap { try? JSONDecoder().decode([YouTubeVideo].self, from: $0) } }
-    static func save(_ songs: [YouTubeVideo], id: String) { UserDefaults(suiteName: WatchWidgetSnapshot.group)?.set(try? JSONEncoder().encode(songs), forKey: "watch.collection." + id) }
+    static func read(_ id: String) -> [YouTubeVideo]? { WatchEnvironment.defaults.data(forKey: "watch.collection." + id).flatMap { try? JSONDecoder().decode([YouTubeVideo].self, from: $0) } }
+    static func save(_ songs: [YouTubeVideo], id: String) { WatchEnvironment.defaults.set(try? JSONEncoder().encode(songs), forKey: "watch.collection." + id) }
 }
 
 /// The cover is the navigation origin, preserving the collection's identity as it opens.

@@ -1,0 +1,104 @@
+--- a/NovaMusicWatch/WatchWidgetSnapshot.swift
++++ b/NovaMusicWatch/WatchWidgetSnapshot.swift
+@@ -1,5 +1,6 @@
+ import Foundation
+ import WidgetKit
++import CryptoKit
+ struct WatchWidgetSnapshot: Codable {
+     var title: String
+     var artist: String
+@@ -25,6 +26,64 @@
+             return defaults
+         }
+         #endif
+-        return UserDefaults(suiteName: WatchWidgetSnapshot.group) ?? .standard
++        return WatchLibraryDefaults(suiteName: WatchWidgetSnapshot.group)
+     }()
+ }
++
++/// watchOS aborts when a preferences domain grows past its byte limit.
++/// Keep settings in preferences and bulk library records in atomic shared files.
++final class WatchLibraryDefaults: UserDefaults, @unchecked Sendable {
++    private let settings: UserDefaults
++    private let recordsDirectory: URL
++    private let recordLock = NSRecursiveLock()
++
++    init(suiteName: String, directory: URL? = nil) {
++        let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
++            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++        recordsDirectory = directory ?? container.appendingPathComponent("Library/Application Support/NovaLibraryRecords", isDirectory: true)
++        settings = UserDefaults(suiteName: suiteName)!
++        super.init(suiteName: suiteName)!
++        // Migrate only this suite. Remove each old value only after a durable write.
++        for (key, value) in settings.persistentDomain(forName: suiteName) ?? [:] {
++            guard key != "widget.playback", let data = value as? Data else { continue }
++            do {
++                if !FileManager.default.fileExists(atPath: recordURL(key).path) { try writeRecord(data, forKey: key) }
++                else { settings.removeObject(forKey: key) }
++            } catch { NSLog("Nova Music could not migrate library record: %@", error.localizedDescription) }
++        }
++    }
++    private func recordURL(_ key: String) -> URL {
++        let name = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
++        return recordsDirectory.appendingPathComponent(name + ".data")
++    }
++    func writeRecord(_ data: Data, forKey key: String) throws {
++        recordLock.lock(); defer { recordLock.unlock() }
++        try FileManager.default.createDirectory(at: recordsDirectory, withIntermediateDirectories: true)
++        try data.write(to: recordURL(key), options: .atomic)
++        settings.removeObject(forKey: key)
++    }
++    override func data(forKey defaultName: String) -> Data? {
++        recordLock.lock(); defer { recordLock.unlock() }
++        return (try? Data(contentsOf: recordURL(defaultName))) ?? settings.data(forKey: defaultName)
++    }
++    override func object(forKey defaultName: String) -> Any? {
++        recordLock.lock(); defer { recordLock.unlock() }
++        return (try? Data(contentsOf: recordURL(defaultName))) ?? settings.object(forKey: defaultName)
++    }
++    override func set(_ value: Any?, forKey defaultName: String) {
++        recordLock.lock(); defer { recordLock.unlock() }
++        if let data = value as? Data {
++            do { try writeRecord(data, forKey: defaultName) }
++            catch { NSLog("Nova Music could not save library record: %@", error.localizedDescription) }
++        } else {
++            // A key can change type or be cleared; do not retain its previous file.
++            if FileManager.default.fileExists(atPath: recordURL(defaultName).path) { try? FileManager.default.removeItem(at: recordURL(defaultName)) }
++            settings.set(value, forKey: defaultName)
++        }
++    }
++    override func removeObject(forKey defaultName: String) {
++        recordLock.lock(); defer { recordLock.unlock() }
++        try? FileManager.default.removeItem(at: recordURL(defaultName))
++        settings.removeObject(forKey: defaultName)
++    }
++}
+--- a/NovaMusicWatch/WatchSync.swift
++++ b/NovaMusicWatch/WatchSync.swift
+@@ -83,7 +83,12 @@
+             previous = values; try save()
+         } catch { self.error = error.localizedDescription }
+     }
+-    private func save() throws { store?.defaults.set(try JSONEncoder().encode(document), forKey: cacheKey) }
++    private func save() throws {
++        guard let defaults = store?.defaults else { return }
++        let data = try JSONEncoder().encode(document)
++        if let files = defaults as? WatchLibraryDefaults { try files.writeRecord(data, forKey: cacheKey) }
++        else { defaults.set(data, forKey: cacheKey) }
++    }
+     func sync() async {
+         guard !syncing, cloudEnabled, let identity, let store else { return }
+         syncing = true; let requestEpoch = epoch; defer { syncing = false }
+--- a/NovaMusicWatch/WatchViews.swift
++++ b/NovaMusicWatch/WatchViews.swift
+@@ -287,8 +287,8 @@
+     }
+ }
+ enum WatchContentCache {
+-    static func read(_ id: String) -> [YouTubeVideo]? { UserDefaults(suiteName: WatchWidgetSnapshot.group)?.data(forKey: "watch.collection." + id).flatMap { try? JSONDecoder().decode([YouTubeVideo].self, from: $0) } }
+-    static func save(_ songs: [YouTubeVideo], id: String) { UserDefaults(suiteName: WatchWidgetSnapshot.group)?.set(try? JSONEncoder().encode(songs), forKey: "watch.collection." + id) }
++    static func read(_ id: String) -> [YouTubeVideo]? { WatchEnvironment.defaults.data(forKey: "watch.collection." + id).flatMap { try? JSONDecoder().decode([YouTubeVideo].self, from: $0) } }
++    static func save(_ songs: [YouTubeVideo], id: String) { WatchEnvironment.defaults.set(try? JSONEncoder().encode(songs), forKey: "watch.collection." + id) }
+ }
+ 
+ /// The cover is the navigation origin, preserving the collection's identity as it opens.

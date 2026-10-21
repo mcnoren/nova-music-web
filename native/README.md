@@ -1,3 +1,7 @@
+# Watch startup crash fix (October 21, 2026)
+
+A real Watch crash exposed the 1 MB watchOS preference limit during iCloud library sync. Watch bulk data now persists in atomic app-group files and migrates existing saved records. Apply `patches/watch-library-storage.patch` after the Watch experience update, or copy the refreshed Watch sources. Seventeen Watch unit tests passed, including migration, a large playlist reopening, and a cloud snapshot over 1 MB.
+
 # Apple Watch experience (October 21, 2026)
 
 The Watch app now presents complete cover artwork with controls that hide on tap, includes the app icon, and handles Apple’s companion Now Playing launch to select iPhone playback. Phone lyrics, calibrated seeking, song information, bounded queue updates, and richer folder list/gallery/replacement controls are included. Large text uses the scrollable transport screen.

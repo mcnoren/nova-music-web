@@ -83,7 +83,12 @@ final class MusicAccountSync: ObservableObject {
             previous = values; try save()
         } catch { self.error = error.localizedDescription }
     }
-    private func save() throws { store?.defaults.set(try JSONEncoder().encode(document), forKey: cacheKey) }
+    private func save() throws {
+        guard let defaults = store?.defaults else { return }
+        let data = try JSONEncoder().encode(document)
+        if let files = defaults as? WatchLibraryDefaults { try files.writeRecord(data, forKey: cacheKey) }
+        else { defaults.set(data, forKey: cacheKey) }
+    }
     func sync() async {
         guard !syncing, cloudEnabled, let identity, let store else { return }
         syncing = true; let requestEpoch = epoch; defer { syncing = false }

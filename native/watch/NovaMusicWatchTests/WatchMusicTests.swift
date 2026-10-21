@@ -154,3 +154,64 @@ extension WatchMusicTests {
         XCTAssertEqual(bridge.snapshot?.calibration?.offset, 2)
     }
 }
+
+@MainActor
+private final class WatchLargeLibraryCloud: NovaCloudStorage {
+    var document = NovaSyncDocument()
+    func accountID() async throws -> String { "large-watch-library" }
+    func load(_ name: String) async throws -> NovaCloudSnapshot { .init(document: document, revision: "1") }
+    func save(_ document: NovaSyncDocument, named: String, revision: String?) async throws { self.document = document }
+}
+
+@MainActor
+extension WatchMusicTests {
+    func testLibraryFilesMigratePreferencesAndSurviveReplacementAndRemoval() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = Data("existing saved playlists".utf8)
+        defaults.set(original, forKey: "youtube.playlists"); defaults.set(true, forKey: "watch.icloud.enabled")
+        let files = WatchLibraryDefaults(suiteName: domain, directory: directory)
+        XCTAssertEqual(files.data(forKey: "youtube.playlists"), original)
+        XCTAssertNil(defaults.data(forKey: "youtube.playlists"), "Migrated bulk records must leave preferences")
+        XCTAssertTrue(files.bool(forKey: "watch.icloud.enabled"))
+        let large = Data(repeating: 42, count: 1_200_000)
+        files.set(large, forKey: "youtube.playlists")
+        let relaunched = WatchLibraryDefaults(suiteName: domain, directory: directory)
+        XCTAssertEqual(relaunched.data(forKey: "youtube.playlists"), large)
+        XCTAssertEqual(relaunched.object(forKey: "youtube.playlists") as? Data, large)
+        XCTAssertNil(defaults.data(forKey: "youtube.playlists"))
+        relaunched.removeObject(forKey: "youtube.playlists")
+        XCTAssertNil(files.data(forKey: "youtube.playlists"))
+        files.set(original, forKey: "watch.collection.fixture"); files.set(nil, forKey: "watch.collection.fixture")
+        XCTAssertNil(files.data(forKey: "watch.collection.fixture"))
+    }
+    func testLargePlaylistSurvivesStoreRelaunchOutsidePreferences() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = WatchLibraryDefaults(suiteName: domain, directory: directory)
+        let store = YouTubeStore(defaults: files, musicOnly: true)
+        let tracks = (0..<1000).map { song(String(format: "%011d", $0), title: String(repeating: "Long title ", count: 120) + String($0)) }
+        let id = try XCTUnwrap(store.createPlaylist(named: "Large library", videos: tracks))
+        XCTAssertGreaterThan(try XCTUnwrap(files.data(forKey: "youtube.playlists")).count, 1_048_576)
+        XCTAssertNil(defaults.data(forKey: "youtube.playlists"))
+        let restored = YouTubeStore(defaults: WatchLibraryDefaults(suiteName: domain, directory: directory), musicOnly: true)
+        XCTAssertTrue(restored.playlist(id)?.videos == tracks, "Large playlist must reopen unchanged")
+        store.player.stop(); restored.player.stop()
+    }
+    func testICloudStartupSavesLargeDocumentWithoutWatchPreferenceLimit() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = WatchLibraryDefaults(suiteName: domain, directory: directory)
+        let store = YouTubeStore(defaults: files, musicOnly: true), cloud = WatchLargeLibraryCloud()
+        cloud.document = try NovaSyncDocument().updating(previous: [:], next: ["setting:largeFixture": .string(String(repeating: "library", count: 180_000))], actor: UUID())
+        let account = MusicAccountSync(store: store, cloud: cloud)
+        await account.bootstrap()
+        XCTAssertTrue(account.cloudEnabled); XCTAssertNil(account.error); XCTAssertNotNil(account.lastSynced)
+        let key = "watch.icloud.document.large-watch-library"
+        let data = try XCTUnwrap(files.data(forKey: key))
+        XCTAssertGreaterThan(data.count, 1_048_576)
+        XCTAssertNil(defaults.data(forKey: key), "The cloud snapshot must never reach CFPreferences")
+        XCTAssertEqual(try JSONDecoder().decode(NovaSyncDocument.self, from: data).values["setting:largeFixture"], cloud.document.values["setting:largeFixture"])
+        account.disconnect(); store.player.stop()
+    }
+}
